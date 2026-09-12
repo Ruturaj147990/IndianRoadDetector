@@ -1,0 +1,21 @@
+# Indian Road Dataset (IRD V1 & YOLOv8 Benchmark)
+# Deterministic clip-disjoint split
+path: C:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/data/indian_road_yolo
+train: images/train
+val: images/val
+
+names:
+  0: person
+  1: rider
+  2: car
+  3: truck
+  4: bus
+  5: motorcycle
+  6: bicycle
+  7: autorickshaw
+  8: animal
+  9: vehicle fallback
+  10: traffic light
+  11: traffic sign
+
+nc: 12

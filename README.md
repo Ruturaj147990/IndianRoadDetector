@@ -155,7 +155,42 @@ python scripts/evaluate_ird.py --run-unit-tests
 
 ---
 
-## 6. Model Architecture & Specifications
+## 6. Inference & AMD ROCm GPU Acceleration (`scripts/infer_ird.py`)
+
+Run real-time detection on images, directories, or video files with native AMD ROCm acceleration or automatic CPU fallback:
+
+### Running Inference:
+```bash
+# Video Inference with Real-Time FPS HUD overlay (AMD RX 7700 XT via ROCm)
+.\run_rocm.bat scripts/infer_ird.py \
+    --weights experiments/custom_model/overfit_test.pt \
+    --source data/test_clip.mp4 \
+    --output experiments/custom_model/local_test/inferred_video.mp4 \
+    --conf 0.1 \
+    --imgsz 640
+
+# Single Image Inference
+.\run_rocm.bat scripts/infer_ird.py \
+    --weights experiments/custom_model/overfit_test.pt \
+    --source data/benchmark_test/images/val/001c0d67-590e-479b-86b9-c521fe884139__0000.jpg \
+    --output experiments/custom_model/local_test/output_image.jpg \
+    --conf 0.1
+
+# Run on CPU (Any Python Environment)
+python scripts/infer_ird.py \
+    --weights experiments/custom_model/overfit_test.pt \
+    --source data/benchmark_test/images/val/001c0d67-590e-479b-86b9-c521fe884139__0000.jpg \
+    --device cpu
+```
+
+### AMD ROCm 100-Image Controlled Benchmark:
+```bash
+.\run_rocm.bat scripts/benchmark_rocm.py --num-images 100
+```
+
+---
+
+## 7. Model Architecture & Specifications
 
 | Component | Class | Parameters | Spatial Outputs | Primary Role |
 |---|---|---|---|---|

@@ -1,0 +1,4 @@
+experiment,architecture_version,loss_version,matcher_version,confidence_version,obj_gate,parameters,flops,imgsz,epochs,precision,recall,map50,map50_95,latency_ms,fps,notes
+Baseline_Overfit,v1_legacy,v1_binary_obj,spatial_matcher_v1,raw_legacy,none,4241529,18.4G,640,10,0.003,0.012,0.001,0.0004,21.94,45.57,"Baseline failure: clamping gradient death, giant boxes, 76.6% touching boundaries"
+Exp_D_SmoothCoder,v2_smooth_box,v2_quality_aware_obj,spatial_matcher_v1,conf0.25,0.05,4241529,18.4G,640,10,0.312,0.185,0.114,0.058,18.15,55.10,"Smooth non-saturating box coder + soft IoU objectness targets on sample dataset"
+Exp_A_Full_5ep,v2_smooth_box,v2_quality_aware_obj,spatial_matcher_v1,conf0.25,0.05,4241529,18.4G,640,5,0.017,0.400,0.221,0.119,18.15,55.10,"Full 8282 train / 1719 val stopped at Epoch 5; Car AP50 0.785, Motorcycle AP50 0.414, Rider AP50 0.362, Bicycle AP50 0.322"

@@ -96,183 +96,38 @@ def box_iou_xyxy(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     return inter_area / (union_area + 1e-16)
 
 
-def pure_pytorch_nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
-    """
-    Pure PyTorch implementation of Non-Maximum Suppression.
-    Independent of Ultralytics and external C++ dependencies.
-    
-    Args:
-        boxes: Tensor of shape [N, 4] in (x1, y1, x2, y2).
-        scores: Tensor of shape [N] with confidence scores.
-        iou_threshold: IoU threshold for suppression.
-        
-    Returns:
-        Tensor of shape [K] containing indices of retained boxes.
-    """
-    if boxes.numel() == 0:
-        return torch.empty((0,), dtype=torch.long, device=boxes.device)
+from src.models.box_coder import (
+    NUM_CLASSES,
+    class_aware_nms,
+    decode_ird_predictions_authoritative,
+    pure_pytorch_nms,
+)
 
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = boxes[:, 2]
-    y2 = boxes[:, 3]
-    areas = (x2 - x1).clamp(min=0.0) * (y2 - y1).clamp(min=0.0)
-
-    order = scores.argsort(descending=True)
-    keep = []
-
-    while order.numel() > 0:
-        i = order[0].item()
-        keep.append(i)
-        if order.numel() == 1:
-            break
-
-        xx1 = torch.maximum(x1[i], x1[order[1:]])
-        yy1 = torch.maximum(y1[i], y1[order[1:]])
-        xx2 = torch.minimum(x2[i], x2[order[1:]])
-        yy2 = torch.minimum(y2[i], y2[order[1:]])
-
-        w = (xx2 - xx1).clamp(min=0.0)
-        h = (yy2 - yy1).clamp(min=0.0)
-        inter = w * h
-
-        ovr = inter / (areas[i] + areas[order[1:]] - inter + 1e-16)
-        inds = (ovr <= iou_threshold).nonzero(as_tuple=False).squeeze(1)
-        order = order[inds + 1]
-
-    return torch.tensor(keep, dtype=torch.long, device=boxes.device)
-
-
-def class_aware_nms(
-    boxes: torch.Tensor,
-    scores: torch.Tensor,
-    class_ids: torch.Tensor,
-    iou_threshold: float = 0.65,
-    max_coordinate: float = 10000.0,
-) -> torch.Tensor:
-    """
-    Perform class-aware NMS by applying spatial offsets per class ID.
-    
-    Args:
-        boxes: Tensor of shape [N, 4] in (x1, y1, x2, y2).
-        scores: Tensor of shape [N].
-        class_ids: Tensor of shape [N] with integer class labels.
-        iou_threshold: NMS IoU threshold.
-        max_coordinate: Coordinate shift offset to isolate classes spatially.
-        
-    Returns:
-        Tensor of kept indices.
-    """
-    if boxes.numel() == 0:
-        return torch.empty((0,), dtype=torch.long, device=boxes.device)
-
-    offsets = class_ids.float().unsqueeze(1) * max_coordinate
-    offset_boxes = boxes + offsets
-    return pure_pytorch_nms(offset_boxes, scores, iou_threshold)
-
-
-# ==============================================================================
-# 2. Multi-Scale IRD Head Output Decoding
-# ==============================================================================
 
 def decode_ird_predictions(
     head_output: Any,
     img_size: int = 640,
-    conf_threshold: float = 0.001,
-    iou_threshold: float = 0.65,
+    conf_threshold: float = 0.25,
+    iou_threshold: float = 0.50,
+    max_det: int = 300,
+    obj_gate: Optional[float] = None,
+    decoder_version: str = "v2_smooth",
     device: torch.device = torch.device("cpu"),
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Decode raw multi-scale IRD predictions across strides 8, 16, and 32.
-    
-    Formulation:
-      cx = (gx + 2.0 * sigmoid(tx) - 0.5) * stride
-      cy = (gy + 2.0 * sigmoid(ty) - 0.5) * stride
-      w  = stride * exp(clamp(tw, -4.0, 4.0))
-      h  = stride * exp(clamp(th, -4.0, 4.0))
-      score = sigmoid(obj) * sigmoid(cls_c)
-      
-    Args:
-        head_output: HeadOutput container from IndianRoadDetector.
-        img_size: Resolution of input image (default: 640).
-        conf_threshold: Candidate score filtering threshold.
-        iou_threshold: NMS IoU threshold.
-        device: Active torch device.
-        
-    Returns:
-        Tuple of (retained_boxes [K, 4], retained_scores [K], retained_class_ids [K]).
+    Authoritative decoding pipeline for IRD multi-scale predictions.
+    Delegates directly to src.models.box_coder.decode_ird_predictions_authoritative.
     """
-    all_boxes_list: List[torch.Tensor] = []
-    all_scores_list: List[torch.Tensor] = []
-    all_classes_list: List[torch.Tensor] = []
-
-    box_preds = head_output.box_preds  # 3 tensors: [B, 4, H, W]
-    obj_preds = head_output.obj_preds  # 3 tensors: [B, 1, H, W]
-    cls_preds = head_output.cls_preds  # 3 tensors: [B, 12, H, W]
-    strides = head_output.strides      # [8, 16, 32]
-
-    # Process first item in batch [B=1]
-    for scale_idx in range(len(strides)):
-        stride = strides[scale_idx]
-        b_pred = box_preds[scale_idx][0]  # [4, H, W]
-        o_pred = obj_preds[scale_idx][0]  # [1, H, W]
-        c_pred = cls_preds[scale_idx][0]  # [12, H, W]
-
-        H, W = b_pred.shape[1], b_pred.shape[2]
-
-        # Generate grid coordinates
-        grid_y, grid_x = torch.meshgrid(
-            torch.arange(H, device=device, dtype=torch.float32),
-            torch.arange(W, device=device, dtype=torch.float32),
-            indexing="ij",
-        )
-
-        tx = b_pred[0]
-        ty = b_pred[1]
-        tw = b_pred[2]
-        th = b_pred[3]
-
-        # Decode centers and dimensions
-        cx = (grid_x + torch.sigmoid(tx) * 2.0 - 0.5) * stride
-        cy = (grid_y + torch.sigmoid(ty) * 2.0 - 0.5) * stride
-        w = stride * torch.exp(tw.clamp(min=-4.0, max=4.0))
-        h = stride * torch.exp(th.clamp(min=-4.0, max=4.0))
-
-        x1 = (cx - w / 2.0).clamp(min=0.0, max=float(img_size))
-        y1 = (cy - h / 2.0).clamp(min=0.0, max=float(img_size))
-        x2 = (cx + w / 2.0).clamp(min=0.0, max=float(img_size))
-        y2 = (cy + h / 2.0).clamp(min=0.0, max=float(img_size))
-
-        scale_boxes = torch.stack([x1, y1, x2, y2], dim=-1).reshape(-1, 4)  # [H*W, 4]
-
-        # Probabilities
-        obj_prob = torch.sigmoid(o_pred[0]).reshape(-1, 1)  # [H*W, 1]
-        cls_prob = torch.sigmoid(c_pred).permute(1, 2, 0).reshape(-1, NUM_CLASSES)  # [H*W, 12]
-
-        # Combined detection confidence per class
-        scale_scores = obj_prob * cls_prob  # [H*W, 12]
-
-        # Filter by candidate confidence threshold
-        max_scores, class_ids = scale_scores.max(dim=-1)
-        valid_mask = max_scores >= conf_threshold
-
-        if valid_mask.any():
-            all_boxes_list.append(scale_boxes[valid_mask])
-            all_scores_list.append(max_scores[valid_mask])
-            all_classes_list.append(class_ids[valid_mask])
-
-    if not all_boxes_list:
-        empty = torch.empty((0,), device=device)
-        return torch.empty((0, 4), device=device), empty, torch.empty((0,), dtype=torch.long, device=device)
-
-    all_boxes = torch.cat(all_boxes_list, dim=0)
-    all_scores = torch.cat(all_scores_list, dim=0)
-    all_classes = torch.cat(all_classes_list, dim=0)
-
-    # Class-aware NMS
-    keep_indices = class_aware_nms(all_boxes, all_scores, all_classes, iou_threshold=iou_threshold)
-
-    return all_boxes[keep_indices], all_scores[keep_indices], all_classes[keep_indices]
+    return decode_ird_predictions_authoritative(
+        head_output=head_output,
+        img_size=img_size,
+        conf_threshold=conf_threshold,
+        iou_threshold=iou_threshold,
+        max_det=max_det,
+        obj_gate=obj_gate,
+        decoder_version=decoder_version,
+        device=device,
+    )
 
 
 # ==============================================================================
@@ -495,10 +350,13 @@ def run_evaluation(
     data_yaml_path: str = "data/indian_road_yolo/data.yaml",
     img_size: int = 640,
     conf_threshold: float = 0.001,
-    iou_threshold: float = 0.65,
+    iou_threshold: float = 0.50,
+    max_det: int = 300,
     device_str: str = "auto",
     output_json_path: str = "experiments/custom_model/ird_evaluation.json",
     max_samples: Optional[int] = None,
+    obj_gate: Optional[float] = None,
+    decoder_version: str = "v2_smooth",
 ) -> Dict[str, Any]:
     """
     Execute full IRD V1 benchmark evaluation.
@@ -515,6 +373,7 @@ def run_evaluation(
     print(f"Image Resolution:     {img_size}x{img_size}")
     print(f"Confidence Threshold: {conf_threshold}")
     print(f"NMS IoU Threshold:    {iou_threshold}")
+    print(f"Max Detections / Img: {max_det}")
     print("=" * 65)
 
     # 2. Build IRD Model
@@ -549,47 +408,50 @@ def run_evaluation(
         candidates = [
             Path("data/benchmark_test/data.yaml"),
             Path("data/indian_road_yolo/data.yaml"),
-            Path("data/sample_16/data.yaml"),
         ]
-        for cand in candidates:
-            if cand.exists():
-                yaml_p = cand
-                print(f"Specified YAML not found. Using fallback: {yaml_p}")
+        for c in candidates:
+            if c.exists():
+                yaml_p = c
                 break
 
     if not yaml_p.exists():
-        raise FileNotFoundError(f"Cannot find dataset configuration at {data_yaml_path}")
+        raise FileNotFoundError(f"Cannot find dataset configuration: {data_yaml_path}")
 
-    val_img_dir, class_names = parse_data_yaml(yaml_p)
-    base_dir = val_img_dir.parent.parent
-    val_lbl_dir = base_dir / "labels" / val_img_dir.name
+    val_images_dir, class_names = parse_data_yaml(yaml_p)
+    val_lbl_dir = val_images_dir.parent.parent / "labels" / val_images_dir.name
+    if not val_lbl_dir.exists():
+        val_lbl_dir = val_images_dir.parent / "labels"
 
-    print(f"Validation Images Dir: {val_img_dir}")
-    print(f"Validation Labels Dir: {val_lbl_dir}")
-
-    # Gather images
-    extensions = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")
-    image_paths: List[Path] = []
-    for ext in extensions:
-        image_paths.extend(sorted(list(val_img_dir.glob(ext))))
+    # Find validation images
+    image_extensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp"]
+    val_images: List[Path] = []
+    if val_images_dir.exists():
+        for ext in image_extensions:
+            val_images.extend(val_images_dir.glob(f"*{ext}"))
+            val_images.extend(val_images_dir.glob(f"*{ext.upper()}"))
+    val_images = sorted(list(set(val_images)))
 
     if max_samples and max_samples > 0:
-        image_paths = image_paths[:max_samples]
+        val_images = val_images[:max_samples]
 
-    n_images = len(image_paths)
+    n_images = len(val_images)
+    print(f"Found {n_images} validation images in: {val_images_dir.resolve()}")
     if n_images == 0:
-        raise RuntimeError(f"No validation images found in {val_img_dir}")
+        raise FileNotFoundError(f"No validation images found in: {val_images_dir}")
 
-    print(f"Evaluating {n_images} images across {NUM_CLASSES} classes...\n")
-
-    # 5. Inference & Prediction Collection
-    all_preds_per_class: Dict[int, List[Dict[str, Any]]] = {c: [] for c in range(NUM_CLASSES)}
-    all_gts_per_class: Dict[int, List[Dict[str, Any]]] = {c: [] for c in range(NUM_CLASSES)}
-
+    # 5. Run Evaluation Loop
+    print("\nRunning inference & prediction gathering...")
     latencies: List[float] = []
 
-    for img_idx, img_p in enumerate(image_paths):
-        # Load and preprocess image
+    all_preds_per_class: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    all_gts_per_class: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+
+    # Warmup
+    dummy = torch.randn(1, 3, img_size, img_size, device=device)
+    with torch.no_grad():
+        _ = model(dummy)
+
+    for img_idx, img_p in enumerate(val_images):
         with Image.open(img_p) as img_raw:
             orig_w, orig_h = img_raw.size
             img_rgb = img_raw.convert("RGB").resize((img_size, img_size))
@@ -609,6 +471,9 @@ def run_evaluation(
                 img_size=img_size,
                 conf_threshold=conf_threshold,
                 iou_threshold=iou_threshold,
+                max_det=max_det,
+                obj_gate=obj_gate,
+                decoder_version=decoder_version,
                 device=device,
             )
 
@@ -662,39 +527,32 @@ def run_evaluation(
     precision_list: List[float] = []
     recall_list: List[float] = []
 
-    for c in range(NUM_CLASSES):
-        cls_name = BENCHMARK_CLASSES[c]
-        res = evaluate_class_predictions(
-            preds=all_preds_per_class[c],
-            gts=all_gts_per_class[c],
-            class_id=c,
-            iou_thresholds=IOU_THRESHOLDS,
-        )
-        per_class_results[cls_name] = res
+    for c_id, c_name in enumerate(BENCHMARK_CLASSES):
+        preds = all_preds_per_class[c_id]
+        gts = all_gts_per_class[c_id]
+        res = evaluate_class_predictions(preds, gts, class_id=c_id, iou_thresholds=IOU_THRESHOLDS)
+        per_class_results[c_name] = res
 
-        # Include classes in global mAP if they have ground truths
         if res["n_gt"] > 0:
             ap50_list.append(res["ap50"])
             ap50_95_list.append(res["ap50_95"])
             precision_list.append(res["precision_50"])
             recall_list.append(res["recall_50"])
 
-    mean_precision = float(np.mean(precision_list)) if precision_list else 0.0
-    mean_recall = float(np.mean(recall_list)) if recall_list else 0.0
     mAP50 = float(np.mean(ap50_list)) if ap50_list else 0.0
     mAP50_95 = float(np.mean(ap50_95_list)) if ap50_95_list else 0.0
-
-    avg_ms = float(np.mean(latencies))
+    mean_precision = float(np.mean(precision_list)) if precision_list else 0.0
+    mean_recall = float(np.mean(recall_list)) if recall_list else 0.0
+    avg_ms = float(np.mean(latencies)) if latencies else 0.0
     fps = float(1000.0 / avg_ms) if avg_ms > 0 else 0.0
 
-    # 7. Print Required Benchmark Report
+    # 7. Print Console Report
     print("\n" + "=" * 40)
-    print("IRD V1 BENCHMARK RESULTS")
-    print("=" * 24)
-    print(f"Images evaluated: {n_images}")
+    print("IRD V1 BENCHMARK EVALUATION RESULTS")
+    print("=" * 40)
+    print(f"Model:            IRD (IndianRoadDetection)")
     print(f"Parameters:       {n_params:,}")
-    print(f"Image size:       {img_size}")
-    print()
+    print(f"Images evaluated: {n_images}")
     print(f"Precision:        {mean_precision:.3f}")
     print(f"Recall:           {mean_recall:.3f}")
     print(f"mAP@0.50:         {mAP50:.3f}")
@@ -749,6 +607,7 @@ def run_unit_tests() -> bool:
     2. Non-Maximum Suppression (NMS)
     3. Prediction / GT matching
     4. 101-point Average Precision (AP) calculation
+    5. Class-aware NMS & multi-condition candidate filtering
     """
     print("\n" + "=" * 50)
     print("Running IRD Evaluator Built-In Unit Tests")
@@ -808,6 +667,47 @@ def run_unit_tests() -> bool:
     assert abs(ap_half - 0.5) < 1e-4, f"Expected 0.5, got {ap_half}"
     print("PASS: 101-point COCO Average Precision (AP) calculation verified.")
 
+    # 5. Class-Aware NMS & Synthetic Multi-Condition Test
+    synth_boxes = torch.tensor([
+        [10.0, 10.0, 50.0, 50.0],  # Box 0: class 0, score 0.90
+        [12.0, 12.0, 52.0, 52.0],  # Box 1: class 0, score 0.80 (same class, high overlap with Box 0)
+        [11.0, 11.0, 51.0, 51.0],  # Box 2: class 1, score 0.85 (different class, same location -> must keep!)
+        [10.0, 10.0, 50.0, 50.0],  # Box 3: class 0, score 0.70 (exact duplicate of Box 0 -> must suppress!)
+        [100.0, 100.0, 150.0, 150.0], # Box 4: class 2, score 0.05 (low-confidence box -> filtered out)
+    ], dtype=torch.float32)
+    synth_scores = torch.tensor([0.90, 0.80, 0.85, 0.70, 0.05], dtype=torch.float32)
+    synth_classes = torch.tensor([0, 0, 1, 0, 2], dtype=torch.long)
+
+    # Apply confidence filtering at 0.25
+    conf_filter = synth_scores >= 0.25
+    f_boxes = synth_boxes[conf_filter]
+    f_scores = synth_scores[conf_filter]
+    f_classes = synth_classes[conf_filter]
+
+    # Verify low-confidence box 4 was excluded
+    assert len(f_boxes) == 4, f"Expected 4 boxes after conf>=0.25, got {len(f_boxes)}"
+
+    # Run class-aware NMS
+    keep_synth = class_aware_nms(f_boxes, f_scores, f_classes, iou_threshold=0.50, max_det=300).tolist()
+    assert 0 in keep_synth, "Box 0 (class 0, 0.90) must be kept"
+    assert 2 in keep_synth, "Box 2 (class 1, 0.85) must be kept (different class)"
+    assert 1 not in keep_synth, "Box 1 (class 0, 0.80) must be suppressed by Box 0"
+    assert 3 not in keep_synth, "Box 3 (class 0, 0.70 duplicate) must be suppressed"
+    assert len(keep_synth) == 2, f"Expected exactly 2 kept detections, got {len(keep_synth)}"
+
+    # Verify max_det capping
+    many_boxes = torch.stack([
+        torch.arange(0, 1000, 10, dtype=torch.float32),
+        torch.arange(0, 1000, 10, dtype=torch.float32),
+        torch.arange(5, 1005, 10, dtype=torch.float32),
+        torch.arange(5, 1005, 10, dtype=torch.float32),
+    ], dim=-1)
+    many_scores = torch.linspace(0.99, 0.26, 100)
+    many_classes = torch.zeros(100, dtype=torch.long)
+    keep_max = class_aware_nms(many_boxes, many_scores, many_classes, iou_threshold=0.50, max_det=10)
+    assert len(keep_max) == 10, f"Expected 10 detections under max_det=10, got {len(keep_max)}"
+    print("PASS: Class-aware NMS & synthetic multi-condition test verified successfully.")
+
     print("=" * 50)
     print("ALL EVALUATION UNIT TESTS PASSED SUCCESSFULLY!")
     print("=" * 50 + "\n")
@@ -828,8 +728,14 @@ if __name__ == "__main__":
                         help="Inference image resolution (default: 640)")
     parser.add_argument("--conf", type=float, default=0.001,
                         help="Confidence score filtering threshold (default: 0.001)")
-    parser.add_argument("--iou", type=float, default=0.65,
-                        help="NMS IoU threshold (default: 0.65)")
+    parser.add_argument("--iou", type=float, default=0.50,
+                        help="NMS IoU threshold (default: 0.50)")
+    parser.add_argument("--max-det", type=int, default=300,
+                        help="Maximum detections per image (default: 300)")
+    parser.add_argument("--obj-gate", type=float, default=None,
+                        help="Early objectness gate threshold in [0, 1] (default: None, auto-matches conf)")
+    parser.add_argument("--decoder-version", type=str, default="v2_smooth", choices=["v2_smooth", "v1_legacy"],
+                        help="Box decoder parameterization version (default: v2_smooth)")
     parser.add_argument("--device", type=str, default="auto",
                         help="Compute device: 'auto', 'cuda', or 'cpu'")
     parser.add_argument("--output-json", type=str, default="experiments/custom_model/ird_evaluation.json",
@@ -844,8 +750,8 @@ if __name__ == "__main__":
     if args.run_unit_tests:
         run_unit_tests()
 
-    # If unit tests flag was given alone and weights don't exist, exit cleanly
-    if args.run_unit_tests and not Path(args.data).exists() and not Path("data/benchmark_test/data.yaml").exists():
+    # If unit tests flag was given standalone or weights don't exist, exit cleanly
+    if args.run_unit_tests and (len(sys.argv) == 2 or not Path(args.weights).exists()):
         sys.exit(0)
 
     run_evaluation(
@@ -854,7 +760,10 @@ if __name__ == "__main__":
         img_size=args.imgsz,
         conf_threshold=args.conf,
         iou_threshold=args.iou,
+        max_det=args.max_det,
         device_str=args.device,
         output_json_path=args.output_json,
         max_samples=args.max_samples,
+        obj_gate=args.obj_gate,
+        decoder_version=args.decoder_version,
     )

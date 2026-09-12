@@ -30,6 +30,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from src.models.head.custom_head import HeadOutput
+from src.models.box_coder import decode_boxes_smooth
 
 
 def bbox_ciou(box1: torch.Tensor, box2: torch.Tensor, eps: float = 1e-7) -> torch.Tensor:
@@ -98,44 +99,21 @@ def decode_boxes_at_indices(
     grid_x: torch.Tensor,
     grid_y: torch.Tensor,
     stride: int,
+    version: str = "v2_smooth",
 ) -> torch.Tensor:
     """
-    Decode raw [tx, ty, tw, th] predictions at specific grid positions into pixel [x1, y1, x2, y2].
+    Authoritative shared box decoder entrypoint for training and validation metrics.
     
-    Formulation:
-      cx = (gx + (2 * sigmoid(tx) - 0.5)) * stride
-      cy = (gy + (2 * sigmoid(ty) - 0.5)) * stride
-      w  = stride * exp(clamp(tw, -4, 4))
-      h  = stride * exp(clamp(th, -4, 4))
-      
-    Args:
-        raw_box_preds: Tensor of shape [N, 4] containing raw [tx, ty, tw, th].
-        grid_x: Tensor of shape [N] containing grid x coordinates.
-        grid_y: Tensor of shape [N] containing grid y coordinates.
-        stride: Feature map stride in pixels (8, 16, or 32).
-        
-    Returns:
-        Decoded boxes [N, 4] in (x1, y1, x2, y2) pixel coordinates.
+    Delegates to src.models.box_coder.decode_boxes_smooth to guarantee 100% mathematical
+    identity across loss calculation, evaluation, and inference.
     """
-    tx = raw_box_preds[:, 0]
-    ty = raw_box_preds[:, 1]
-    tw = raw_box_preds[:, 2]
-    th = raw_box_preds[:, 3]
-
-    # Center decoding: smoothly offsets around the grid cell top-left
-    cx = (grid_x.float() + torch.sigmoid(tx) * 2.0 - 0.5) * stride
-    cy = (grid_y.float() + torch.sigmoid(ty) * 2.0 - 0.5) * stride
-
-    # Size decoding: stable scale-relative exponential bounded to prevent explosion
-    w = stride * torch.exp(tw.clamp(min=-4.0, max=4.0))
-    h = stride * torch.exp(th.clamp(min=-4.0, max=4.0))
-
-    x1 = cx - (w / 2.0)
-    y1 = cy - (h / 2.0)
-    x2 = cx + (w / 2.0)
-    y2 = cy + (h / 2.0)
-
-    return torch.stack([x1, y1, x2, y2], dim=-1)
+    return decode_boxes_smooth(
+        raw_box=raw_box_preds,
+        grid_x=grid_x,
+        grid_y=grid_y,
+        stride=stride,
+        version=version,
+    )
 
 
 class MultiScaleSpatialMatcher:
@@ -411,6 +389,8 @@ class IndianRoadLoss(nn.Module):
         strides: Tuple[int, int, int] = (8, 16, 32),
         focal_gamma: float = 2.0,
         focal_alpha: float = 0.25,
+        decoder_version: str = "v2_smooth",
+        quality_aware_obj: bool = True,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -420,6 +400,8 @@ class IndianRoadLoss(nn.Module):
         self.strides = list(strides)
         self.focal_gamma = focal_gamma
         self.focal_alpha = focal_alpha
+        self.decoder_version = decoder_version
+        self.quality_aware_obj = quality_aware_obj
 
         self.matcher = MultiScaleSpatialMatcher(strides=self.strides)
 
@@ -498,15 +480,14 @@ class IndianRoadLoss(nn.Module):
                 gt_boxes = match["gt_boxes"]      # [N_pos, 4] in (cx, cy, w, h)
                 gt_classes = match["gt_classes"]  # [N_pos]
 
-                # Mark positive locations in objectness target
-                target_obj[b_idx, 0, g_y, g_x] = 1.0
-
                 # 1. Bounding-box regression loss (CIoU)
                 # Extract raw box predictions at positive grid positions: [N_pos, 4]
                 raw_boxes_pos = pred_b[b_idx, :, g_y, g_x]
 
                 # Decode into absolute corners [N_pos, 4] in (x1, y1, x2, y2)
-                decoded_pred_boxes = decode_boxes_at_indices(raw_boxes_pos, g_x, g_y, stride)
+                decoded_pred_boxes = decode_boxes_smooth(
+                    raw_boxes_pos, g_x, g_y, stride=stride, version=self.decoder_version
+                )
 
                 # Convert ground-truth (cx, cy, w, h) to (x1, y1, x2, y2)
                 gt_cx = gt_boxes[:, 0]
@@ -523,6 +504,14 @@ class IndianRoadLoss(nn.Module):
                 ciou = bbox_ciou(decoded_pred_boxes, decoded_gt_boxes)
                 scale_box_loss = (1.0 - ciou).sum()
                 total_box_loss = total_box_loss + scale_box_loss
+
+                # Mark positive locations in objectness target
+                if self.quality_aware_obj:
+                    # Quality-aware objectness target: smooth soft target based on localization IoU
+                    iou_quality = ciou.detach().clamp(min=0.0, max=1.0)
+                    target_obj[b_idx, 0, g_y, g_x] = (0.5 + 0.5 * iou_quality).to(dtype=dtype)
+                else:
+                    target_obj[b_idx, 0, g_y, g_x] = torch.tensor(1.0, dtype=dtype, device=device)
 
                 # 2. Classification loss (Multi-label Focal BCE)
                 # Extract class logits at positive locations: [N_pos, num_classes]

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
@@ -72,10 +72,12 @@ class YOLODetectionDataset(Dataset):
         lbl_dir: Path,
         img_size: Tuple[int, int] = (640, 640),
         max_samples: Optional[int] = None,
+        augment: bool = False,
     ) -> None:
         self.img_dir = img_dir
         self.lbl_dir = lbl_dir
         self.img_size = img_size
+        self.augment = augment
 
         # Find all valid image files
         extensions = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp")
@@ -93,13 +95,7 @@ class YOLODetectionDataset(Dataset):
         img_path = self.img_paths[idx]
         lbl_path = self.lbl_dir / f"{img_path.stem}.txt"
 
-        # 1. Load and resize image using PIL
-        with Image.open(img_path) as img:
-            img = img.convert("RGB").resize(self.img_size)
-            img_np = np.array(img, dtype=np.float32) / 255.0  # [H, W, 3] in [0, 1]
-            img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)  # [3, H, W]
-
-        # 2. Parse YOLO label file: <class_id> <cx> <cy> <w> <h>
+        # 1. Parse YOLO label file: <class_id> <cx> <cy> <w> <h>
         boxes: List[List[float]] = []
         if lbl_path.exists():
             with open(lbl_path, "r") as f:
@@ -123,6 +119,46 @@ class YOLODetectionDataset(Dataset):
                                 boxes.append([cls_id, cx, cy, w, h])
                         except ValueError:
                             continue
+
+        # 2. Load and augment image
+        with Image.open(img_path) as img:
+            img = img.convert("RGB")
+            
+            # Apply training augmentations
+            if self.augment:
+                # A. Horizontal Flip (p=0.5)
+                if random.random() < 0.5:
+                    img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                    for b in boxes:
+                        b[1] = 1.0 - b[1]  # Flip cx
+                        
+                # B. Photometric Jitter (p=0.6)
+                if random.random() < 0.6:
+                    b_factor = random.uniform(0.85, 1.15)
+                    c_factor = random.uniform(0.85, 1.15)
+                    img = ImageEnhance.Brightness(img).enhance(b_factor)
+                    img = ImageEnhance.Contrast(img).enhance(c_factor)
+                    
+                # C. Subtle Gaussian Blur / Haze (p=0.15)
+                if random.random() < 0.15:
+                    blur_radius = random.uniform(0.3, 0.8)
+                    img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+            # Resize to target input size
+            img = img.resize(self.img_size)
+            img_np = np.array(img, dtype=np.float32) / 255.0  # [H, W, 3] in [0, 1]
+            img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)  # [3, H, W]
+
+            # D. Mild Cutout / Occlusion Erasing (p=0.25)
+            if self.augment and random.random() < 0.25:
+                H, W = self.img_size
+                num_patches = random.randint(1, 2)
+                for _ in range(num_patches):
+                    ph = random.randint(16, 48)
+                    pw = random.randint(16, 48)
+                    py = random.randint(0, H - ph)
+                    px = random.randint(0, W - pw)
+                    img_tensor[:, py:py+ph, px:px+pw] = 0.45
 
         if boxes:
             target_tensor = torch.tensor(boxes, dtype=torch.float32)
@@ -474,6 +510,8 @@ def train_ird(
     box_weight: float = 5.0,
     obj_weight: float = 1.0,
     cls_weight: float = 1.0,
+    decoder_version: str = "v2_smooth",
+    quality_aware_obj: bool = True,
     device_str: str = "auto",
     workers: int = 2,
     seed: int = 42,
@@ -547,20 +585,22 @@ def train_ird(
         lbl_dir=train_lbl_dir,
         img_size=(img_size, img_size),
         max_samples=max_train_samples,
+        augment=True,
     )
     val_dataset = YOLODetectionDataset(
         img_dir=val_img_dir,
         lbl_dir=val_lbl_dir,
         img_size=(img_size, img_size),
         max_samples=max_val_samples,
+        augment=False,
     )
 
     print(f"Training Samples:         {len(train_dataset):,}")
     print(f"Validation Samples:       {len(val_dataset):,}")
     print("-" * 82)
 
-    # On Windows or CPU, workers > 0 can have multiprocessing overhead; default safely
-    num_workers = 0 if sys.platform == "win32" or device.type == "cpu" else workers
+    # Use specified workers
+    num_workers = workers
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -587,6 +627,8 @@ def train_ird(
         box_weight=box_weight,
         obj_weight=obj_weight,
         cls_weight=cls_weight,
+        decoder_version=decoder_version,
+        quality_aware_obj=quality_aware_obj,
     ).to(device)
 
     param_counts = model.get_parameter_counts(only_trainable=True)
@@ -623,6 +665,8 @@ def train_ird(
         "box_weight": box_weight,
         "obj_weight": obj_weight,
         "cls_weight": cls_weight,
+        "decoder_version": decoder_version,
+        "quality_aware_obj": quality_aware_obj,
         "device": str(device),
         "use_amp": amp_active,
         "seed": seed,
@@ -654,7 +698,7 @@ def train_ird(
 
     for epoch in range(start_epoch, epochs + 1):
         epoch_start = time.time()
-        current_lr = float(scheduler.get_last_lr()[0])
+        current_lr = float(optimizer.param_groups[0]["lr"])
 
         # Training phase
         train_res = train_one_epoch(
@@ -792,6 +836,12 @@ if __name__ == "__main__":
                         help="Reproducibility random seed (default: 42)")
     parser.add_argument("--amp", action="store_true", default=True,
                         help="Use mixed precision training when CUDA is available")
+    parser.add_argument("--decoder-version", type=str, default="v2_smooth", choices=["v2_smooth", "v1_legacy"],
+                        help="Box decoder parameterization version (default: v2_smooth)")
+    parser.add_argument("--quality-obj", action="store_true", default=True,
+                        help="Use quality-aware IoU objectness targets (default: True)")
+    parser.add_argument("--no-quality-obj", dest="quality_obj", action="store_false",
+                        help="Disable quality-aware objectness (use legacy binary targets)")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to IRD checkpoint (.pt) to resume training from")
     parser.add_argument("--smoke-test", action="store_true", default=False,
@@ -811,6 +861,8 @@ if __name__ == "__main__":
             weight_decay=args.weight_decay,
             img_size=args.img_size,
             num_classes=args.num_classes,
+            decoder_version=args.decoder_version,
+            quality_aware_obj=args.quality_obj,
             device_str=args.device,
             workers=0,
             seed=args.seed,
@@ -832,6 +884,8 @@ if __name__ == "__main__":
             box_weight=args.box_weight,
             obj_weight=args.obj_weight,
             cls_weight=args.cls_weight,
+            decoder_version=args.decoder_version,
+            quality_aware_obj=args.quality_obj,
             device_str=args.device,
             workers=args.workers,
             seed=args.seed,

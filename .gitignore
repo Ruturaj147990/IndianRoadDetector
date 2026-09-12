@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Dataset (too large for git — download separately)
+data/indian_road_yolo/images/
+data/indian_road_yolo/labels/
+data/sample_16/
+data/benchmark_test/
+data/test_stream/
+
+# Videos
+*.mp4
+
+# Model checkpoints (too large for git)
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Experiment outputs (regenerable)
+experiments/custom_model/final_visual_validation/
+experiments/custom_model/final_video/
+experiments/custom_model/epoch1_visual_validation/
+experiments/custom_model/local_test/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

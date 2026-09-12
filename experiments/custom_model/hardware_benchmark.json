@@ -1,0 +1,49 @@
+{
+  "model": "IRD (IndianRoadDetection V1)",
+  "parameters": 4241529,
+  "input_resolution": "640x640",
+  "timestamp": "2026-09-12 18:48:37",
+  "cpu": {
+    "device": "AMD Ryzen 5 7600X (6 cores / 12 threads)",
+    "backend": "Pure PyTorch CPU",
+    "latency_ms": 94.11,
+    "fps": 10.63
+  },
+  "gpu_rocm": {
+    "device": "AMD Radeon RX 7700 XT",
+    "backend": "PyTorch 2.9.1+rocm7.2.1 ROCm 7.2.1",
+    "batch_1_latency_ms": 49.03,
+    "batch_1_fps": 20.39,
+    "batch_4_fps": 16.51,
+    "batch_16_fps": 17.92,
+    "peak_vram_mb": 8392.0
+  },
+  "portability": {
+    "device_abstraction": "Fully verified: uses torch.device abstraction everywhere",
+    "hardcoded_cuda_calls": "0 (zero hardcoded .cuda() calls in codebase)",
+    "nvidia_cuda_ready": true,
+    "amd_rocm_verified": true,
+    "cpu_fallback_verified": true,
+    "numerical_shapes_parity": true,
+    "strides": [
+      8,
+      16,
+      32
+    ],
+    "grid_shapes_640": [
+      [
+        80,
+        80
+      ],
+      [
+        40,
+        40
+      ],
+      [
+        20,
+        20
+      ]
+    ],
+    "total_anchors": 8400
+  }
+}
