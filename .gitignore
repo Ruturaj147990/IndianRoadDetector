@@ -8,10 +8,9 @@ __pycache__/
 dist/
 build/
 
-# Dataset (too large for git — download separately)
+# Dataset (images/labels too large for standard git push — host separately)
 data/indian_road_yolo/images/
 data/indian_road_yolo/labels/
-data/sample_16/
 data/benchmark_test/
 data/test_stream/
 
@@ -25,7 +24,6 @@ data/test_stream/
 *.engine
 
 # Experiment outputs (regenerable)
-experiments/custom_model/final_visual_validation/
 experiments/custom_model/final_video/
 experiments/custom_model/epoch1_visual_validation/
 experiments/custom_model/local_test/
