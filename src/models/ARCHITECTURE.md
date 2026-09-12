@@ -1,6 +1,8 @@
 # Indian Road Custom Detector Architecture
 
 ## 1. Motivation & Context
+- **Official Model Name**: **IRD — IndianRoadDetection (V1)**
+- **Internal PyTorch Class**: `IndianRoadDetector`
 - **Baseline**: YOLOv8s trained on the Indian Road Dataset (8,000 train / 2,000 val) achieved 42.1% mAP50 and 33.1% mAP50-95.
 - **Goal**: Build a genuinely custom PyTorch detector engineered specifically for the challenges of Indian road environments:
   - **Extreme Occlusion & High Density**: Overlapping vehicles, lane-splitting motorcycles/auto-rickshaws, crowded pedestrians.
@@ -102,7 +104,7 @@
 
 ---
 
-## 5. Full Integrated Detector (`IndianRoadDetector`)
+## 5. Full Integrated Detector (`IndianRoadDetector` / **IRD V1**)
 
 ```
 Input [B, 3, 640, 640]
@@ -139,7 +141,7 @@ IndianRoadHead
 | **Backbone** (`IndianRoadBackbone`) | 3,431,550 (~3.43M) | 80.9% |
 | **Neck** (`IndianRoadNeck`) | 524,872 (~0.52M) | 12.4% |
 | **Head** (`IndianRoadHead`) | 285,107 (~0.29M) | 6.7% |
-| **Full Detector Pipeline** | **4,241,529 (~4.24M)** | **100.0%** |
+| **Complete IRD Pipeline** | **4,241,529 (~4.24M)** | **100.0%** |
 
 ---
 
@@ -164,14 +166,27 @@ IndianRoadHead
 ## 7. Component 5: Tiny-Dataset Overfitting Verification Test
 
 Verified via [`overfit_test.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/experiments/custom_model/overfit_test.py):
-- **Setup**: 16 Indian road training images, batch size 8, AdamW ($\text{lr}=10^{-3}$, cosine decay).
-- **Training Convergence**:
-  - Training Total Loss dropped from **`142.45`** (Epoch 1) $\to$ **`4.37`** (Epoch 60): **`96.9%` reduction**.
+- **Training Total Loss Reduction**: **`96.93%`** (`142.45` $\to$ `4.37`).
 - **Post-Training Evaluation (Same 16 Images)**:
   - Classification Loss dropped by **`98.93%`** (`4.51` $\to$ `0.048`).
   - Objectness Loss dropped by **`72.36%`** (`1.13` $\to$ `0.31`).
   - Box CIoU Loss dropped by **`20.08%`** (`0.971` $\to$ `0.776`).
   - Total Loss dropped by **`59.6%`** (`10.50` $\to$ `4.24`).
-- **Artifacts Saved**:
-  - Checkpoint: [`overfit_test.pt`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/experiments/custom_model/overfit_test.pt)
-  - Results JSON: [`overfit_test_results.json`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/experiments/custom_model/overfit_test_results.json)
+
+---
+
+## 8. Component 6: Production Training Pipeline (`train_custom.py`)
+
+Implementation: [`train_custom.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/scripts/train_custom.py)
+
+### Pipeline Capabilities:
+1. **Model Identification**: **IRD (IndianRoadDetection)**.
+2. **Pure PyTorch Architecture**: 100% independent from Ultralytics training/loss components.
+3. **Data Handling**: Dynamic dataset discovery (`/content/indian_road_yolo` with local auto-fallback), YOLO coordinate validation, PyTorch DataLoader integration.
+4. **Training Optimization**: AdamW optimizer, Cosine Annealing scheduler, Automatic Mixed Precision (`torch.amp`), and gradient clipping ($10.0$).
+5. **Transparent Validation**: Evaluates without gradients every epoch, recording validation loss breakdown, mean match IoU, and top-1 class accuracy.
+6. **Robust Checkpoint Management**:
+   - Best checkpoint: `ird_best.pt`
+   - Latest checkpoint: `ird_last.pt`
+   - Resumption: Full restoration of model weights, optimizer, scheduler, scaler, epoch count, and history.
+   - History logs: `ird_history.csv`, `ird_history.json`, `ird_config.json`.
