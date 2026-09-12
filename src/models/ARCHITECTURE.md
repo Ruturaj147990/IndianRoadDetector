@@ -190,3 +190,27 @@ Implementation: [`train_custom.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO
    - Latest checkpoint: `ird_last.pt`
    - Resumption: Full restoration of model weights, optimizer, scheduler, scaler, epoch count, and history.
    - History logs: `ird_history.csv`, `ird_history.json`, `ird_config.json`.
+
+---
+
+## 9. Component 7: Benchmark Dataset Pipeline & Clip-Disjoint Splitting
+
+Implementations:
+- Pipeline: [`src/data/convert_bdd_to_yolo.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/src/data/convert_bdd_to_yolo.py)
+- Audit & Verification: [`src/data/verify_dataset.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/src/data/verify_dataset.py)
+
+### Design & Benchmark Integrity:
+1. **Identical Class Semantics with YOLOv8 Baseline**:
+   - Exactly 12 classes in identical ordering (0: person, 1: rider, 2: car, 3: truck, 4: bus, 5: motorcycle, 6: bicycle, 7: autorickshaw, 8: animal, 9: vehicle fallback, 10: traffic light, 11: traffic sign).
+   - Guarantees valid, apples-to-apples comparison between YOLOv8s and IRD V1.
+2. **Elimination of Video Clip Leakage**:
+   - In BDD100K-style road datasets (`thirdeyelabs/indian-road-dataset`), consecutive frames belong to continuous video clips.
+   - Splitting at the frame level causes clip leakage (near-identical backgrounds/agents across train and val).
+   - The pipeline enforces **atomic clip-level assignment** via deterministic SHA-256 hashing ($\text{train\_ratio} = 0.8$, $\text{seed} = 42$).
+   - $\text{Clips}_{\text{train}} \cap \text{Clips}_{\text{val}} = \emptyset$ is mathematically and empirically guaranteed.
+3. **RAM-Safe Direct Streaming**:
+   - Streams from Hugging Face via `IterableDataset` and writes directly to disk, avoiding high-RAM crashes.
+4. **Clip Boundary Integrity**:
+   - Prioritizes clip completeness over exact sample boundaries. Terminating at clip boundaries ensures no video clip is truncated or partially written.
+5. **Multi-Point Verification Audit**:
+   - Automatically checks clip disjointness, image-label parity, coordinate bounds, and class distribution.

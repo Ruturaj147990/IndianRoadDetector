@@ -1,0 +1,42 @@
+{
+  "model_name": "IRD \u2014 IndianRoadDetection (V1)",
+  "checkpoint_path": "experiments/custom_model/ird_smoke_test/ird_best.pt",
+  "dataset_path": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\data\\benchmark_test\\data.yaml",
+  "image_size": 640,
+  "number_of_images": 60,
+  "parameter_count": 4241529,
+  "precision": 0.0,
+  "recall": 0.0,
+  "mAP50": 0.0,
+  "mAP50_95": 0.0,
+  "per_class_ap50": {
+    "person": 0.0,
+    "rider": 0.0,
+    "car": 0.0,
+    "truck": 0.0,
+    "bus": 0.0,
+    "motorcycle": 0.0,
+    "bicycle": 0.0,
+    "autorickshaw": 0.0,
+    "animal": 0.0,
+    "vehicle fallback": 0.0,
+    "traffic light": 0.0,
+    "traffic sign": 0.0
+  },
+  "per_class_ap50_95": {
+    "person": 0.0,
+    "rider": 0.0,
+    "car": 0.0,
+    "truck": 0.0,
+    "bus": 0.0,
+    "motorcycle": 0.0,
+    "bicycle": 0.0,
+    "autorickshaw": 0.0,
+    "animal": 0.0,
+    "vehicle fallback": 0.0,
+    "traffic light": 0.0,
+    "traffic sign": 0.0
+  },
+  "average_latency_ms": 93.81,
+  "fps": 10.66
+}
