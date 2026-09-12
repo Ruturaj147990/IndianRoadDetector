@@ -512,6 +512,9 @@ def train_ird(
     cls_weight: float = 1.0,
     decoder_version: str = "v2_smooth",
     quality_aware_obj: bool = True,
+    matcher_version: str = "v1_spatial",
+    class_balanced_loss: bool = False,
+    small_obj_floor: bool = False,
     device_str: str = "auto",
     workers: int = 2,
     seed: int = 42,
@@ -629,6 +632,9 @@ def train_ird(
         cls_weight=cls_weight,
         decoder_version=decoder_version,
         quality_aware_obj=quality_aware_obj,
+        matcher_version=matcher_version,
+        class_balanced_loss=class_balanced_loss,
+        small_obj_floor=small_obj_floor,
     ).to(device)
 
     param_counts = model.get_parameter_counts(only_trainable=True)
@@ -637,6 +643,9 @@ def train_ird(
     print(f"  Neck:                   {param_counts['neck']:>10,} ({param_counts['neck']/1e6:.2f}M)")
     print(f"  Decoupled Head:         {param_counts['head']:>10,} ({param_counts['head']/1e6:.2f}M)")
     print(f"  Complete IRD Detector:  {param_counts['total']:>10,} ({param_counts['total']/1e6:.2f}M)")
+    print(f"Matcher Version:          {matcher_version}")
+    print(f"Class-Balanced Loss:      {class_balanced_loss}")
+    print(f"Small-Object Floor (GSO): {small_obj_floor}")
     print("-" * 82)
 
     # 5. Optimizer, Scheduler, and Scaler
@@ -667,6 +676,9 @@ def train_ird(
         "cls_weight": cls_weight,
         "decoder_version": decoder_version,
         "quality_aware_obj": quality_aware_obj,
+        "matcher_version": matcher_version,
+        "class_balanced_loss": class_balanced_loss,
+        "small_obj_floor": small_obj_floor,
         "device": str(device),
         "use_amp": amp_active,
         "seed": seed,
@@ -842,6 +854,12 @@ if __name__ == "__main__":
                         help="Use quality-aware IoU objectness targets (default: True)")
     parser.add_argument("--no-quality-obj", dest="quality_obj", action="store_false",
                         help="Disable quality-aware objectness (use legacy binary targets)")
+    parser.add_argument("--matcher-version", type=str, default="v1_spatial", choices=["v1_spatial", "topk_adaptive_v2"],
+                        help="Target assignment matcher version (default: v1_spatial)")
+    parser.add_argument("--class-balanced-loss", action="store_true", default=False,
+                        help="Enable class-frequency balanced positive focal classification loss")
+    parser.add_argument("--small-obj-floor", action="store_true", default=False,
+                        help="Enable Guaranteed Small-Object Presence Supervision (GSO floor 0.80 for scale < 96px)")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to IRD checkpoint (.pt) to resume training from")
     parser.add_argument("--smoke-test", action="store_true", default=False,
@@ -863,6 +881,9 @@ if __name__ == "__main__":
             num_classes=args.num_classes,
             decoder_version=args.decoder_version,
             quality_aware_obj=args.quality_obj,
+            matcher_version=args.matcher_version,
+            class_balanced_loss=args.class_balanced_loss,
+            small_obj_floor=args.small_obj_floor,
             device_str=args.device,
             workers=0,
             seed=args.seed,
@@ -886,6 +907,9 @@ if __name__ == "__main__":
             cls_weight=args.cls_weight,
             decoder_version=args.decoder_version,
             quality_aware_obj=args.quality_obj,
+            matcher_version=args.matcher_version,
+            class_balanced_loss=args.class_balanced_loss,
+            small_obj_floor=args.small_obj_floor,
             device_str=args.device,
             workers=args.workers,
             seed=args.seed,

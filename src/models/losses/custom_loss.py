@@ -328,6 +328,167 @@ class MultiScaleSpatialMatcher:
         return final_matches
 
 
+class ScaleAdaptiveTopKMatcher:
+    """
+    Scale-Adaptive Top-K Candidate Assigner for IRD V1 (Matcher Version 2).
+    
+    Eliminates area-based candidate inflation where large vehicles receive 20+ anchors
+    and small motorcycles/pedestrians receive only 1. Guarantees top-k spatial anchors
+    per object based on receptive center alignment and scale awareness.
+    """
+    def __init__(
+        self,
+        strides: List[int] = [8, 16, 32],
+        topk: int = 4,
+        max_dist_radius: float = 2.2,
+    ) -> None:
+        self.strides = strides
+        self.topk = topk
+        self.max_dist_radius = max_dist_radius
+
+    def match(
+        self,
+        targets: torch.Tensor,
+        grid_shapes: List[Tuple[int, int]],
+        img_size: Tuple[int, int] = (640, 640),
+    ) -> List[Dict[str, torch.Tensor]]:
+        device = targets.device if targets.numel() > 0 else torch.device("cpu")
+        num_scales = len(self.strides)
+        h_img, w_img = img_size
+
+        matches_per_scale: List[Dict[str, List[Any]]] = [
+            {"batch_idx": [], "grid_y": [], "grid_x": [], "gt_boxes": [], "gt_classes": [], "areas": []}
+            for _ in range(num_scales)
+        ]
+
+        if targets.numel() == 0:
+            return [
+                {
+                    "batch_idx": torch.empty(0, dtype=torch.long, device=device),
+                    "grid_y": torch.empty(0, dtype=torch.long, device=device),
+                    "grid_x": torch.empty(0, dtype=torch.long, device=device),
+                    "gt_boxes": torch.empty((0, 4), dtype=torch.float32, device=device),
+                    "gt_classes": torch.empty(0, dtype=torch.long, device=device),
+                }
+                for _ in range(num_scales)
+            ]
+
+        cx = targets[:, 2]
+        cy = targets[:, 3]
+        w = targets[:, 4]
+        h = targets[:, 5]
+
+        is_normalized = (cx <= 1.0).all() and (cy <= 1.0).all() and (w <= 1.0).all() and (h <= 1.0).all()
+        if is_normalized:
+            cx_px = cx * w_img
+            cy_px = cy * h_img
+            w_px = w * w_img
+            h_px = h * h_img
+        else:
+            cx_px, cy_px, w_px, h_px = cx, cy, w, h
+
+        obj_scale = torch.sqrt(w_px * h_px + 1e-6)
+        obj_areas = w_px * h_px
+
+        for k in range(targets.shape[0]):
+            b_idx = int(targets[k, 0].item())
+            cls_id = int(targets[k, 1].item())
+            k_cx = float(cx_px[k].item())
+            k_cy = float(cy_px[k].item())
+            k_w = float(w_px[k].item())
+            k_h = float(h_px[k].item())
+            k_scale = float(obj_scale[k].item())
+            k_area = float(obj_areas[k].item())
+
+            # Determine eligible scales
+            eligible_scales = []
+            if k_scale <= 96.0:
+                eligible_scales.append(0)  # Stride 8 (N3: detail / small objects)
+            if 48.0 <= k_scale <= 256.0:
+                eligible_scales.append(1)  # Stride 16 (N4: medium objects)
+            if k_scale >= 160.0:
+                eligible_scales.append(2)  # Stride 32 (N5: large vehicles)
+
+            if not eligible_scales:
+                eligible_scales = [0] if k_scale < 80.0 else ([1] if k_scale < 200.0 else [2])
+
+            for s_idx in eligible_scales:
+                stride = self.strides[s_idx]
+                h_grid, w_grid = grid_shapes[s_idx]
+
+                gx = k_cx / stride
+                gy = k_cy / stride
+
+                center_j = int(gx)
+                center_i = int(gy)
+
+                r = self.max_dist_radius
+                j_min = max(0, int(math.floor(gx - r)))
+                j_max = min(w_grid - 1, int(math.ceil(gx + r)))
+                i_min = max(0, int(math.floor(gy - r)))
+                i_max = min(h_grid - 1, int(math.ceil(gy + r)))
+
+                candidates = []
+                for i_cand in range(i_min, i_max + 1):
+                    for j_cand in range(j_min, j_max + 1):
+                        cell_cx = j_cand + 0.5
+                        cell_cy = i_cand + 0.5
+                        dist = math.sqrt((cell_cx - gx) ** 2 + (cell_cy - gy) ** 2)
+                        if dist <= r:
+                            candidates.append((dist, i_cand, j_cand))
+
+                candidates.sort(key=lambda x: x[0])
+                chosen = candidates[:self.topk]
+
+                if not chosen and 0 <= center_i < h_grid and 0 <= center_j < w_grid:
+                    chosen = [(0.0, center_i, center_j)]
+
+                for _, i_c, j_c in chosen:
+                    matches_per_scale[s_idx]["batch_idx"].append(b_idx)
+                    matches_per_scale[s_idx]["grid_y"].append(i_c)
+                    matches_per_scale[s_idx]["grid_x"].append(j_c)
+                    matches_per_scale[s_idx]["gt_boxes"].append([k_cx, k_cy, k_w, k_h])
+                    matches_per_scale[s_idx]["gt_classes"].append(cls_id)
+                    matches_per_scale[s_idx]["areas"].append(k_area)
+
+        # Resolve overlaps: smaller area wins
+        final_matches = []
+        for s_idx in range(num_scales):
+            raw = matches_per_scale[s_idx]
+            if not raw["batch_idx"]:
+                final_matches.append({
+                    "batch_idx": torch.empty(0, dtype=torch.long, device=device),
+                    "grid_y": torch.empty(0, dtype=torch.long, device=device),
+                    "grid_x": torch.empty(0, dtype=torch.long, device=device),
+                    "gt_boxes": torch.empty((0, 4), dtype=torch.float32, device=device),
+                    "gt_classes": torch.empty(0, dtype=torch.long, device=device),
+                })
+                continue
+
+            cell_map: Dict[Tuple[int, int, int], int] = {}
+            for idx in range(len(raw["batch_idx"])):
+                key = (raw["batch_idx"][idx], raw["grid_y"][idx], raw["grid_x"][idx])
+                if key not in cell_map or raw["areas"][idx] < raw["areas"][cell_map[key]]:
+                    cell_map[key] = idx
+
+            keep_indices = list(cell_map.values())
+            b_arr = torch.tensor([raw["batch_idx"][i] for i in keep_indices], dtype=torch.long, device=device)
+            y_arr = torch.tensor([raw["grid_y"][i] for i in keep_indices], dtype=torch.long, device=device)
+            x_arr = torch.tensor([raw["grid_x"][i] for i in keep_indices], dtype=torch.long, device=device)
+            box_arr = torch.tensor([raw["gt_boxes"][i] for i in keep_indices], dtype=torch.float32, device=device)
+            cls_arr = torch.tensor([raw["gt_classes"][i] for i in keep_indices], dtype=torch.long, device=device)
+
+            final_matches.append({
+                "batch_idx": b_arr,
+                "grid_y": y_arr,
+                "grid_x": x_arr,
+                "gt_boxes": box_arr,
+                "gt_classes": cls_arr,
+            })
+
+        return final_matches
+
+
 class LossResult(dict):
     """
     Structured result container for IndianRoadDetector training losses.
@@ -379,6 +540,10 @@ class IndianRoadLoss(nn.Module):
         strides: Model strides for [N3, N4, N5] (default: (8, 16, 32)).
         focal_gamma: Focusing parameter for focal loss (default: 2.0).
         focal_alpha: Class balance factor for positive samples (default: 0.25).
+        decoder_version: 'v2_smooth' or 'v1_legacy'.
+        quality_aware_obj: Whether to use IoU soft objectness targets.
+        matcher_version: 'v1_spatial' or 'topk_adaptive_v2'.
+        class_balanced_loss: Whether to apply inverse-frequency focal weighting.
     """
     def __init__(
         self,
@@ -391,6 +556,9 @@ class IndianRoadLoss(nn.Module):
         focal_alpha: float = 0.25,
         decoder_version: str = "v2_smooth",
         quality_aware_obj: bool = True,
+        matcher_version: str = "v1_spatial",
+        class_balanced_loss: bool = False,
+        small_obj_floor: bool = False,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -402,8 +570,14 @@ class IndianRoadLoss(nn.Module):
         self.focal_alpha = focal_alpha
         self.decoder_version = decoder_version
         self.quality_aware_obj = quality_aware_obj
+        self.matcher_version = matcher_version
+        self.class_balanced_loss = class_balanced_loss
+        self.small_obj_floor = small_obj_floor
 
-        self.matcher = MultiScaleSpatialMatcher(strides=self.strides)
+        if matcher_version == "topk_adaptive_v2":
+            self.matcher = ScaleAdaptiveTopKMatcher(strides=self.strides, topk=4)
+        else:
+            self.matcher = MultiScaleSpatialMatcher(strides=self.strides)
 
     def forward(
         self,
@@ -509,7 +683,18 @@ class IndianRoadLoss(nn.Module):
                 if self.quality_aware_obj:
                     # Quality-aware objectness target: smooth soft target based on localization IoU
                     iou_quality = ciou.detach().clamp(min=0.0, max=1.0)
-                    target_obj[b_idx, 0, g_y, g_x] = (0.5 + 0.5 * iou_quality).to(dtype=dtype)
+                    base_target = 0.5 + 0.5 * iou_quality
+                    if self.small_obj_floor:
+                        # Guaranteed Small-Object Presence Supervision (GSO):
+                        # Objects with pixel scale < 96.0px (70.6% of Indian Road Dataset)
+                        # receive a guaranteed target floor of 0.80 instead of being suppressed
+                        # by weak initial CIoU targets (~0.55) against 8400 negative cells.
+                        obj_scale_pos = torch.sqrt(gt_w * gt_h + 1e-6)
+                        floor_val = torch.tensor(0.80, dtype=dtype, device=device)
+                        target_val = torch.where(obj_scale_pos < 96.0, torch.maximum(base_target, floor_val), base_target)
+                        target_obj[b_idx, 0, g_y, g_x] = target_val.to(dtype=dtype)
+                    else:
+                        target_obj[b_idx, 0, g_y, g_x] = base_target.to(dtype=dtype)
                 else:
                     target_obj[b_idx, 0, g_y, g_x] = torch.tensor(1.0, dtype=dtype, device=device)
 
@@ -522,7 +707,18 @@ class IndianRoadLoss(nn.Module):
                 p_cls = torch.sigmoid(pred_cls_pos)
                 p_t_cls = p_cls * one_hot_cls + (1.0 - p_cls) * (1.0 - one_hot_cls)
                 cls_focal = (1.0 - p_t_cls).clamp(min=0.0).pow(self.focal_gamma)
-                scale_cls_loss = (cls_focal * cls_bce).sum()
+
+                if self.class_balanced_loss:
+                    cls_weights_tensor = torch.tensor(
+                        [2.2, 1.8, 1.0, 2.4, 2.5, 1.8, 2.4, 2.3, 2.5, 2.3, 2.5, 2.4],
+                        device=device, dtype=dtype
+                    )
+                    cw = cls_weights_tensor[gt_classes].unsqueeze(1)
+                    cls_weight_mod = 1.0 + (cw - 1.0) * one_hot_cls
+                    scale_cls_loss = (cls_weight_mod * cls_focal * cls_bce).sum()
+                else:
+                    scale_cls_loss = (cls_focal * cls_bce).sum()
+
                 total_cls_loss = total_cls_loss + scale_cls_loss
 
             # 3. Objectness loss (Focal BCE across all grid cells on this scale)

@@ -80,4 +80,11 @@ This document formalizes and proves the architectural, mathematical, and algorit
   - **Quality-Aware Objectness Target**: For positive cells, target is not fixed at 1.0; it is modulated by the localization quality:
     $$y_{\text{obj}} = \text{IoU}(\text{pred\_box}, \text{gt\_box})$$
     This prevents the network from learning high objectness confidence on poorly localized bounding boxes.
-  - **Class-Balanced Focal Loss**: Incorporates $\alpha$ and $\gamma$ focusing parameters to handle severe foreground/background imbalance across 8,400 cells.
+  - **Class-Balanced Focal Loss**: Incorporates $\alpha$ and $\gamma$ focusing parameters with inverse-frequency class modulation to handle severe foreground/background imbalance across 8,400 cells.
+
+### 7. Modern Target Assignment: ScaleAdaptiveTopKMatcher (Version 2)
+In Loop 2 of our empirical audit, we diagnosed that naive spatial bounding allowed large trucks and cars to capture 20+ grid cells while small motorcycles and pedestrians captured only 1. To resolve this without copying YOLO's complex TAL, IRD V1 introduced the **`ScaleAdaptiveTopKMatcher`**:
+1. Selects the top-$k$ ($k=4$) nearest spatial grid cell centers to the ground truth center across eligible scale strides ($N_3$ stride 8, $N_4$ stride 16, $N_5$ stride 32).
+2. Guarantees uniform gradient allocation per object, preventing large vehicles from monopolizing the backpropagation signal.
+3. Resolves grid cell collisions via **strict smaller-area precedence**, guaranteeing that small motorcycles, bicycles, and pedestrians in dense intersections are never overwritten by overlapping buses or trucks.
+4. Yielded an immediate **+2.6% absolute gain in recall** (0.282 -> 0.308) and a **+287% gain in autorickshaw AP50** (0.040 -> 0.155) under a 2-epoch budget.

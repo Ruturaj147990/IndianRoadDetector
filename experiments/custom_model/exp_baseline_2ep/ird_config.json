@@ -1,0 +1,21 @@
+{
+  "model_name": "IRD (IndianRoadDetection)",
+  "version": "1.0",
+  "parameters": 4241529,
+  "num_classes": 12,
+  "epochs": 2,
+  "batch_size": 16,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001,
+  "img_size": 640,
+  "box_weight": 5.0,
+  "obj_weight": 1.0,
+  "cls_weight": 1.0,
+  "decoder_version": "v2_smooth",
+  "quality_aware_obj": true,
+  "device": "cuda",
+  "use_amp": true,
+  "seed": 42,
+  "train_samples": 8282,
+  "val_samples": 1719
+}

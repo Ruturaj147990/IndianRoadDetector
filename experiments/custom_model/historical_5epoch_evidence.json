@@ -1,0 +1,41 @@
+{
+  "mission": "Historical Evidence Preservation",
+  "model_name": "IRD — IndianRoadDetection (V1)",
+  "source_experiment": "exp_a_full_10ep",
+  "epochs_trained": 5,
+  "mAP50": 0.221,
+  "mAP50_95": 0.1191,
+  "precision_at_conf025": 0.0167,
+  "recall_at_conf025": 0.3995,
+  "top1_class_accuracy": 0.722,
+  "mean_iou": 0.704,
+  "per_class_ap50": {
+    "person": 0.0896,
+    "rider": 0.3621,
+    "car": 0.7855,
+    "truck": 0.1653,
+    "bus": 0.2362,
+    "motorcycle": 0.4142,
+    "bicycle": 0.3223,
+    "autorickshaw": 0.1751,
+    "animal": 0.0,
+    "vehicle fallback": 0.1008,
+    "traffic light": 0.0,
+    "traffic sign": 0.0011
+  },
+  "per_class_ap50_95": {
+    "person": 0.031,
+    "rider": 0.1531,
+    "car": 0.5027,
+    "truck": 0.1032,
+    "bus": 0.0695,
+    "motorcycle": 0.2066,
+    "bicycle": 0.2034,
+    "autorickshaw": 0.0936,
+    "animal": 0.0,
+    "vehicle fallback": 0.0664,
+    "traffic light": 0.0,
+    "traffic sign": 0.0003
+  },
+  "notes": "Preserved 5-epoch historical baseline. Cars are strong (78.5%), motorcycles (41.4%), riders (36.2%), bicycles (32.2%). Proves model learns well, but precision gap and minority classes need targeted improvements."
+}

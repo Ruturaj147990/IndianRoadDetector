@@ -11,6 +11,7 @@ Supports:
 """
 
 import argparse
+import json
 from pathlib import Path
 import sys
 import time
@@ -243,6 +244,10 @@ def run_video_inference(
     frame_idx = 0
     model_only_latencies: List[float] = []
     end_to_end_latencies: List[float] = []
+    pre_latencies: List[float] = []
+    fwd_latencies: List[float] = []
+    dec_latencies: List[float] = []
+    render_latencies: List[float] = []
     t_start = time.perf_counter()
 
     while True:
@@ -264,10 +269,14 @@ def run_video_inference(
             decoder_version=decoder_version,
         )
         model_only_latencies.append(timing["model_only_ms"])
+        pre_latencies.append(timing.get("preprocess_ms", 0.0))
+        fwd_latencies.append(timing.get("forward_ms", 0.0))
+        dec_latencies.append(timing.get("decode_nms_ms", 0.0))
 
         current_fps = 1000.0 / max(0.1, timing["model_only_ms"])
         hud = f"IRD V1 | {device_label.split(':')[0]} | {current_fps:.1f} Model FPS ({timing['model_only_ms']:.1f}ms) | {len(boxes)} dets | Frame {frame_idx}/{total_frames}"
 
+        t_rend0 = time.perf_counter()
         annotated_frame = draw_detections_cv2(
             frame=frame,
             boxes=boxes,
@@ -276,8 +285,9 @@ def run_video_inference(
             conf_thresh=conf_thresh,
             hud_text=hud,
         )
-
         writer.write(annotated_frame)
+        render_latencies.append((time.perf_counter() - t_rend0) * 1000.0)
+
         e2e_ms = (time.perf_counter() - t_frame0) * 1000.0
         end_to_end_latencies.append(e2e_ms)
 
@@ -296,23 +306,40 @@ def run_video_inference(
     avg_e2e_lat = float(np.mean(end_to_end_latencies)) if end_to_end_latencies else 0.0
     avg_e2e_fps = float(1000.0 / avg_e2e_lat) if avg_e2e_lat > 0 else 0.0
 
-    print(f"\n\nVideo Inference Complete!")
-    print(f"Total Frames Processed: {frame_idx}")
-    print(f"Model-Only Latency:     {avg_model_lat:.2f} ms/frame ({avg_model_fps:.2f} FPS)")
-    print(f"End-to-End Latency:     {avg_e2e_lat:.2f} ms/frame ({avg_e2e_fps:.2f} FPS)")
-    print(f"Total Elapsed Time:     {total_time:.2f}s")
-    print(f"Saved Video:            {output_path.resolve()}\n")
-
-    return {
+    video_metrics = {
         "video_source": str(video_path),
         "output_path": str(output_path.resolve()),
         "frames_processed": frame_idx,
+        "resolution": f"{w}x{h}",
+        "input_fps": round(fps_in, 2),
         "model_only_latency_ms": round(avg_model_lat, 2),
         "model_only_fps": round(avg_model_fps, 2),
         "end_to_end_latency_ms": round(avg_e2e_lat, 2),
         "end_to_end_fps": round(avg_e2e_fps, 2),
+        "timing_breakdown_ms": {
+            "preprocess_ms": round(float(np.mean(pre_latencies)), 2),
+            "gpu_forward_ms": round(float(np.mean(fwd_latencies)), 2),
+            "decode_nms_ms": round(float(np.mean(dec_latencies)), 2),
+            "render_encode_ms": round(float(np.mean(render_latencies)), 2),
+            "total_per_frame_ms": round(avg_e2e_lat, 2),
+        },
         "device": device_label,
+        "total_elapsed_seconds": round(total_time, 2),
     }
+
+    metrics_file = output_path.parent / "video_benchmark.json"
+    with open(metrics_file, "w") as f:
+        json.dump(video_metrics, f, indent=2)
+
+    print(f"\n\nVideo Inference Complete!")
+    print(f"Total Frames Processed: {frame_idx}")
+    print(f"Model-Only Latency:     {avg_model_lat:.2f} ms/frame ({avg_model_fps:.2f} FPS)")
+    print(f"End-to-End Latency:     {avg_e2e_lat:.2f} ms/frame ({avg_e2e_fps:.2f} FPS)")
+    print(f"Detailed Breakdown:     Pre: {np.mean(pre_latencies):.2f}ms | Fwd: {np.mean(fwd_latencies):.2f}ms | Dec/NMS: {np.mean(dec_latencies):.2f}ms | Render: {np.mean(render_latencies):.2f}ms")
+    print(f"Saved Video:            {output_path.resolve()}")
+    print(f"Saved Benchmark JSON:   {metrics_file.resolve()}\n")
+
+    return video_metrics
 
 
 def main():

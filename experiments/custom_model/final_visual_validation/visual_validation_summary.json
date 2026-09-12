@@ -1,0 +1,326 @@
+[
+  {
+    "category": "A Multi Car",
+    "image": "001c0d67-590e-479b-86b9-c521fe884139__0000.jpg",
+    "output": "val_01_a_multi_car_001c0d67-590e-479b-86b9-c521fe884139__0000.jpg",
+    "detections": 6,
+    "classes": [
+      2,
+      2,
+      2,
+      2,
+      1,
+      2
+    ],
+    "scores": [
+      0.588,
+      0.491,
+      0.357,
+      0.272,
+      0.241,
+      0.205
+    ]
+  },
+  {
+    "category": "C Car Plus Motorcycle",
+    "image": "001c0d67-590e-479b-86b9-c521fe884139__0001.jpg",
+    "output": "val_02_c_car_plus_motorcycle_001c0d67-590e-479b-86b9-c521fe884139__0001.jpg",
+    "detections": 5,
+    "classes": [
+      2,
+      2,
+      1,
+      2,
+      2
+    ],
+    "scores": [
+      0.514,
+      0.512,
+      0.297,
+      0.248,
+      0.226
+    ]
+  },
+  {
+    "category": "D Motorcycle Plus Rider",
+    "image": "001c0d67-590e-479b-86b9-c521fe884139__0001.jpg",
+    "output": "val_03_d_motorcycle_plus_rider_001c0d67-590e-479b-86b9-c521fe884139__0001.jpg",
+    "detections": 5,
+    "classes": [
+      2,
+      2,
+      1,
+      2,
+      2
+    ],
+    "scores": [
+      0.514,
+      0.512,
+      0.297,
+      0.248,
+      0.226
+    ]
+  },
+  {
+    "category": "E Dense Traffic",
+    "image": "001c0d67-590e-479b-86b9-c521fe884139__0001.jpg",
+    "output": "val_04_e_dense_traffic_001c0d67-590e-479b-86b9-c521fe884139__0001.jpg",
+    "detections": 5,
+    "classes": [
+      2,
+      2,
+      1,
+      2,
+      2
+    ],
+    "scores": [
+      0.514,
+      0.512,
+      0.297,
+      0.248,
+      0.226
+    ]
+  },
+  {
+    "category": "F Small Objects",
+    "image": "001c0d67-590e-479b-86b9-c521fe884139__0001.jpg",
+    "output": "val_05_f_small_objects_001c0d67-590e-479b-86b9-c521fe884139__0001.jpg",
+    "detections": 5,
+    "classes": [
+      2,
+      2,
+      1,
+      2,
+      2
+    ],
+    "scores": [
+      0.514,
+      0.512,
+      0.297,
+      0.248,
+      0.226
+    ]
+  },
+  {
+    "category": "B Multi Motorcycle",
+    "image": "001c0d67-590e-479b-86b9-c521fe884139__0009.jpg",
+    "output": "val_06_b_multi_motorcycle_001c0d67-590e-479b-86b9-c521fe884139__0009.jpg",
+    "detections": 6,
+    "classes": [
+      2,
+      2,
+      2,
+      2,
+      5,
+      2
+    ],
+    "scores": [
+      0.495,
+      0.382,
+      0.224,
+      0.216,
+      0.209,
+      0.209
+    ]
+  },
+  {
+    "category": "H Diagonal View",
+    "image": "00263864-d94b-44c5-8eb9-4e51093e59f4__0003.jpg",
+    "output": "val_07_h_diagonal_view_00263864-d94b-44c5-8eb9-4e51093e59f4__0003.jpg",
+    "detections": 2,
+    "classes": [
+      2,
+      2
+    ],
+    "scores": [
+      0.387,
+      0.311
+    ]
+  },
+  {
+    "category": "G Side View",
+    "image": "007e2cdb-abe0-4fe7-89ea-79569159ad14__0033.jpg",
+    "output": "val_08_g_side_view_007e2cdb-abe0-4fe7-89ea-79569159ad14__0033.jpg",
+    "detections": 0,
+    "classes": [],
+    "scores": []
+  },
+  {
+    "category": "Val Stride Sample 1",
+    "image": "001c0d67-590e-479b-86b9-c521fe884139__0000.jpg",
+    "output": "val_09_val_stride_sample_1_001c0d67-590e-479b-86b9-c521fe884139__0000.jpg",
+    "detections": 6,
+    "classes": [
+      2,
+      2,
+      2,
+      2,
+      1,
+      2
+    ],
+    "scores": [
+      0.588,
+      0.491,
+      0.357,
+      0.272,
+      0.241,
+      0.205
+    ]
+  },
+  {
+    "category": "Val Stride Sample 2",
+    "image": "007e2cdb-abe0-4fe7-89ea-79569159ad14__0051.jpg",
+    "output": "val_10_val_stride_sample_2_007e2cdb-abe0-4fe7-89ea-79569159ad14__0051.jpg",
+    "detections": 0,
+    "classes": [],
+    "scores": []
+  },
+  {
+    "category": "Val Stride Sample 3",
+    "image": "008062ff-e7f8-458b-80bd-1f909551011c__0042.jpg",
+    "output": "val_11_val_stride_sample_3_008062ff-e7f8-458b-80bd-1f909551011c__0042.jpg",
+    "detections": 6,
+    "classes": [
+      2,
+      2,
+      1,
+      5,
+      1,
+      5
+    ],
+    "scores": [
+      0.39,
+      0.375,
+      0.318,
+      0.314,
+      0.3,
+      0.242
+    ]
+  },
+  {
+    "category": "Val Stride Sample 4",
+    "image": "00cca8c2-9bcf-4c11-a245-fdc3d5ee2769__0033.jpg",
+    "output": "val_12_val_stride_sample_4_00cca8c2-9bcf-4c11-a245-fdc3d5ee2769__0033.jpg",
+    "detections": 4,
+    "classes": [
+      2,
+      2,
+      2,
+      2
+    ],
+    "scores": [
+      0.431,
+      0.263,
+      0.244,
+      0.233
+    ]
+  },
+  {
+    "category": "Val Stride Sample 5",
+    "image": "01d46ccf-1cc7-4dc9-9cd7-f8ebc85a8a0c__0024.jpg",
+    "output": "val_13_val_stride_sample_5_01d46ccf-1cc7-4dc9-9cd7-f8ebc85a8a0c__0024.jpg",
+    "detections": 6,
+    "classes": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "scores": [
+      0.434,
+      0.408,
+      0.374,
+      0.351,
+      0.275,
+      0.24
+    ]
+  },
+  {
+    "category": "Val Stride Sample 6",
+    "image": "026f4929-e252-4991-b366-b747276680cc__0015.jpg",
+    "output": "val_14_val_stride_sample_6_026f4929-e252-4991-b366-b747276680cc__0015.jpg",
+    "detections": 4,
+    "classes": [
+      5,
+      5,
+      1,
+      2
+    ],
+    "scores": [
+      0.331,
+      0.268,
+      0.243,
+      0.243
+    ]
+  },
+  {
+    "category": "Val Stride Sample 7",
+    "image": "03102699-82f7-4cb7-af89-7df02e156413__0027.jpg",
+    "output": "val_15_val_stride_sample_7_03102699-82f7-4cb7-af89-7df02e156413__0027.jpg",
+    "detections": 2,
+    "classes": [
+      2,
+      2
+    ],
+    "scores": [
+      0.407,
+      0.272
+    ]
+  },
+  {
+    "category": "Val Stride Sample 8",
+    "image": "03407111-1fd9-4df1-ac6b-333a1e0c74ca__0078.jpg",
+    "output": "val_16_val_stride_sample_8_03407111-1fd9-4df1-ac6b-333a1e0c74ca__0078.jpg",
+    "detections": 4,
+    "classes": [
+      2,
+      2,
+      2,
+      2
+    ],
+    "scores": [
+      0.492,
+      0.423,
+      0.339,
+      0.201
+    ]
+  },
+  {
+    "category": "Val Stride Sample 9",
+    "image": "03dd2923-8537-465d-8bf9-066ff76a5d65__0009.jpg",
+    "output": "val_17_val_stride_sample_9_03dd2923-8537-465d-8bf9-066ff76a5d65__0009.jpg",
+    "detections": 4,
+    "classes": [
+      2,
+      2,
+      2,
+      2
+    ],
+    "scores": [
+      0.265,
+      0.261,
+      0.224,
+      0.214
+    ]
+  },
+  {
+    "category": "Val Stride Sample 10",
+    "image": "03e1f4be-a8fe-4d93-b7e8-6d762b6ceeb6__0120.jpg",
+    "output": "val_18_val_stride_sample_10_03e1f4be-a8fe-4d93-b7e8-6d762b6ceeb6__0120.jpg",
+    "detections": 4,
+    "classes": [
+      2,
+      2,
+      5,
+      2
+    ],
+    "scores": [
+      0.409,
+      0.265,
+      0.238,
+      0.233
+    ]
+  }
+]

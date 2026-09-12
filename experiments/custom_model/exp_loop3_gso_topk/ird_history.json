@@ -1,0 +1,36 @@
+[
+  {
+    "epoch": 1,
+    "train_total_loss": 11.7394,
+    "train_box_loss": 0.5614,
+    "train_obj_loss": 6.8316,
+    "train_cls_loss": 2.1009,
+    "train_positives": 247248,
+    "val_total_loss": 3.3015,
+    "val_box_loss": 0.422,
+    "val_obj_loss": 0.3971,
+    "val_cls_loss": 0.7945,
+    "val_positives": 48549,
+    "val_mean_iou": 0.5839,
+    "val_cls_acc": 60.13,
+    "lr": 0.001,
+    "epoch_time_sec": 673.97
+  },
+  {
+    "epoch": 2,
+    "train_total_loss": 3.0738,
+    "train_box_loss": 0.402,
+    "train_obj_loss": 0.3422,
+    "train_cls_loss": 0.7214,
+    "train_positives": 247248,
+    "val_total_loss": 2.825,
+    "val_box_loss": 0.3623,
+    "val_obj_loss": 0.3517,
+    "val_cls_loss": 0.6617,
+    "val_positives": 48549,
+    "val_mean_iou": 0.6431,
+    "val_cls_acc": 66.17,
+    "lr": 0.000505,
+    "epoch_time_sec": 685.79
+  }
+]

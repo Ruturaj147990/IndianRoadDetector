@@ -61,6 +61,7 @@ def run_yolov8s_baseline(
         plots=False,
         save=True,
         verbose=True,
+        workers=0,
     )
     total_train_time = time.time() - start_time
 
@@ -70,10 +71,32 @@ def run_yolov8s_baseline(
         imgsz=imgsz,
         device=device,
         batch=batch_size,
+        workers=0,
     )
 
     # Parameter count
     param_count = sum(p.numel() for p in model.model.parameters() if p.requires_grad)
+
+    # Extract per-class AP if available
+    per_class_ap50 = {}
+    per_class_ap50_95 = {}
+    try:
+        class_names = [model.names[i] for i in range(len(model.names))]
+        if hasattr(val_results.box, "ap50") and val_results.box.ap50 is not None:
+            for i, name in enumerate(class_names):
+                if i < len(val_results.box.ap50):
+                    per_class_ap50[name] = float(val_results.box.ap50[i])
+        if hasattr(val_results.box, "maps") and val_results.box.maps is not None:
+            for i, name in enumerate(class_names):
+                if i < len(val_results.box.maps):
+                    per_class_ap50_95[name] = float(val_results.box.maps[i])
+    except Exception as e:
+        print(f"Warning extracting per-class metrics: {e}")
+
+    # Peak VRAM
+    vram_mb = 0.0
+    if torch.cuda.is_available():
+        vram_mb = round(torch.cuda.max_memory_allocated() / (1024 * 1024), 2)
 
     # Benchmark Latency & FPS
     dummy = torch.randn(1, 3, imgsz, imgsz).to(next(model.model.parameters()).device)
@@ -101,8 +124,11 @@ def run_yolov8s_baseline(
         "recall": float(val_results.results_dict.get("metrics/recall(B)", 0.0)),
         "mAP50": float(val_results.results_dict.get("metrics/mAP50(B)", 0.0)),
         "mAP50_95": float(val_results.results_dict.get("metrics/mAP50-95(B)", 0.0)),
+        "per_class_ap50": per_class_ap50,
+        "per_class_ap50_95": per_class_ap50_95,
         "latency_ms": round(latency_ms, 2),
         "fps": round(fps, 2),
+        "vram_mb": vram_mb,
     }
 
     with open(out_path / "baseline_summary.json", "w") as f:
@@ -114,6 +140,7 @@ def run_yolov8s_baseline(
     print(f"mAP50:      {summary['mAP50']:.4f}")
     print(f"mAP50:95:   {summary['mAP50_95']:.4f}")
     print(f"Latency:    {summary['latency_ms']} ms ({summary['fps']} FPS)")
+    print(f"VRAM:       {summary['vram_mb']} MB")
     print("=" * 70)
 
     return summary

@@ -1,11 +1,24 @@
 """
-Generate Final Visual Validation Suite on Representative Validation Images.
+Generate Targeted Final Visual Validation Suite for IRD V1 (IndianRoadDetection).
 
-Selects images across different clips containing diverse vehicle types:
-cars, motorcycles, autorickshaws, trucks, buses, riders, pedestrians.
-Saves rendered detections to experiments/custom_model/final_visual_validation/.
+Selects validation images across all primary real-world failure cases and diagnostic subsets:
+A. Dense Cars
+B. Dense Motorcycles
+C. Car + Motorcycle Mix
+D. Motorcycle + Rider Pairs
+E. Dense Traffic
+F. Small / Distant Objects
+G. Side Views
+H. Diagonal Views
+I. Night Scenes
+J. Difficult Illumination
+K. Pedestrians & Complex Intersections
+
+Renders high-contrast bounding boxes with class labels, confidence scores, and HUD metrics.
 """
 
+import argparse
+import json
 import sys
 from pathlib import Path
 import cv2
@@ -24,15 +37,14 @@ from scripts.infer_ird import (
 
 
 def run_visual_validation(
-    weights_path: str = "experiments/custom_model/exp_a_full_10ep/ird_best.pt",
+    weights_path: str = "experiments/custom_model/exp_loop2_adaptive_topk/ird_best.pt",
+    subsets_json: str = "experiments/custom_model/val_diagnostic_subsets.json",
     val_images_dir: str = "data/indian_road_yolo/images/val",
-    val_labels_dir: str = "data/indian_road_yolo/labels/val",
     output_dir: str = "experiments/custom_model/final_visual_validation",
-    num_images: int = 10,
-    conf_thresh: float = 0.25,
+    conf_thresh: float = 0.20,
     obj_gate: float = 0.05,
     decoder_version: str = "v2_smooth",
-    device_str: str = "cpu",
+    device_str: str = "cuda",
 ):
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -40,21 +52,39 @@ def run_visual_validation(
     device, device_label = resolve_device(device_str)
     model, ckpt = load_model(weights_path, device)
 
-    val_imgs = sorted(list(Path(val_images_dir).glob("*.jpg")))
-    # Sample 10 images across different clips (stride through the sorted list)
-    step = max(1, len(val_imgs) // num_images)
-    selected_imgs = [val_imgs[i * step] for i in range(min(num_images, len(val_imgs)))]
+    val_img_path = Path(val_images_dir)
+    subsets_path = Path(subsets_json)
 
-    print("=" * 70)
-    print("FINAL VISUAL VALIDATION SUITE")
-    print(f"Weights:     {weights_path}")
-    print(f"Device:      {device_label}")
-    print(f"Confidence:  {conf_thresh} (zero low-conf display)")
-    print(f"Output Dir:  {out_path.resolve()}")
-    print("=" * 70)
+    selected_cases = []
+    if subsets_path.exists():
+        with open(subsets_path, "r") as f:
+            subsets = json.load(f)
+        for cat_name, img_list in subsets.items():
+            for img_name in img_list:
+                img_file = val_img_path / img_name
+                if img_file.exists():
+                    clean_cat = cat_name.replace("_", " ").title()
+                    selected_cases.append((clean_cat, img_file))
+                    break
+
+    # Fallback / supplement with sorted stride images if needed
+    if len(selected_cases) < 10:
+        val_imgs = sorted(list(val_img_path.glob("*.jpg")))
+        step = max(1, len(val_imgs) // 10)
+        for i in range(10):
+            selected_cases.append((f"Val Stride Sample {i+1}", val_imgs[i * step]))
+
+    print("=" * 75)
+    print("IRD V1 TARGETED VISUAL VALIDATION SUITE (10+ SCENARIOS)")
+    print("=" * 75)
+    print(f"Model Checkpoint:  {weights_path}")
+    print(f"Inference Device:  {device_label}")
+    print(f"Confidence Thresh: {conf_thresh} (only verified accepted detections)")
+    print(f"Output Directory:  {out_path.resolve()}")
+    print("-" * 75)
 
     summary = []
-    for idx, img_p in enumerate(selected_imgs):
+    for idx, (cat_label, img_p) in enumerate(selected_cases):
         img_bgr = cv2.imread(str(img_p))
         if img_bgr is None:
             continue
@@ -71,15 +101,16 @@ def run_visual_validation(
             decoder_version=decoder_version,
         )
 
-        hud = f"IRD V1 | Val Image {idx+1}/{len(selected_imgs)} | {len(boxes)} Detections | {lat_ms:.1f}ms"
+        hud = f"IRD V1 | {cat_label} | {len(boxes)} Dets | {lat_ms:.1f}ms | Conf >= {conf_thresh}"
         annotated = draw_detections_cv2(img_bgr, boxes, scores, cids, conf_thresh, hud_text=hud)
 
-        save_file = out_path / f"val_{idx+1:02d}_{img_p.stem}.jpg"
+        slug = cat_label.lower().replace(" ", "_")[:24]
+        save_file = out_path / f"val_{idx+1:02d}_{slug}_{img_p.stem}.jpg"
         cv2.imwrite(str(save_file), annotated)
 
-        det_info = [f"Class {c}: {s:.2f}" for c, s in zip(cids, scores)]
-        print(f"[{idx+1:02d}/{len(selected_imgs)}] {img_p.name}: {len(boxes)} detections ({lat_ms:.1f} ms)")
+        print(f"[{idx+1:02d}/{len(selected_cases)}] {cat_label:<25} | {img_p.name} | {len(boxes):>2} detections ({lat_ms:.1f} ms)")
         summary.append({
+            "category": cat_label,
             "image": img_p.name,
             "output": save_file.name,
             "detections": len(boxes),
@@ -87,11 +118,33 @@ def run_visual_validation(
             "scores": [round(float(s), 3) for s in scores],
         })
 
-    print("-" * 70)
-    print(f"Successfully generated {len(summary)} visual validation images in {out_path}")
-    print("=" * 70)
+    summary_file = out_path / "visual_validation_summary.json"
+    with open(summary_file, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print("-" * 75)
+    print(f"Successfully generated {len(summary)} visual validation outputs in: {out_path.resolve()}")
+    print("=" * 75)
     return summary
 
 
 if __name__ == "__main__":
-    run_visual_validation()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--weights", type=str, default="experiments/custom_model/exp_loop2_adaptive_topk/ird_best.pt")
+    parser.add_argument("--subsets", type=str, default="experiments/custom_model/val_diagnostic_subsets.json")
+    parser.add_argument("--val-dir", type=str, default="data/indian_road_yolo/images/val")
+    parser.add_argument("--out", type=str, default="experiments/custom_model/final_visual_validation")
+    parser.add_argument("--conf", type=float, default=0.20)
+    parser.add_argument("--obj-gate", type=float, default=0.05)
+    parser.add_argument("--device", type=str, default="cuda")
+    args = parser.parse_args()
+
+    run_visual_validation(
+        weights_path=args.weights,
+        subsets_json=args.subsets,
+        val_images_dir=args.val_dir,
+        output_dir=args.out,
+        conf_thresh=args.conf,
+        obj_gate=args.obj_gate,
+        device_str=args.device,
+    )

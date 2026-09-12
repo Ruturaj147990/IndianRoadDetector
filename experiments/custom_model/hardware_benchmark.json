@@ -2,20 +2,20 @@
   "model": "IRD (IndianRoadDetection V1)",
   "parameters": 4241529,
   "input_resolution": "640x640",
-  "timestamp": "2026-09-12 18:48:37",
+  "timestamp": "2026-09-12 22:24:21",
   "cpu": {
     "device": "AMD Ryzen 5 7600X (6 cores / 12 threads)",
     "backend": "Pure PyTorch CPU",
-    "latency_ms": 94.11,
-    "fps": 10.63
+    "latency_ms": 78.44,
+    "fps": 12.75
   },
   "gpu_rocm": {
     "device": "AMD Radeon RX 7700 XT",
     "backend": "PyTorch 2.9.1+rocm7.2.1 ROCm 7.2.1",
-    "batch_1_latency_ms": 49.03,
-    "batch_1_fps": 20.39,
-    "batch_4_fps": 16.51,
-    "batch_16_fps": 17.92,
+    "batch_1_latency_ms": 37.93,
+    "batch_1_fps": 26.37,
+    "batch_4_fps": 62.0,
+    "batch_16_fps": 83.78,
     "peak_vram_mb": 8392.0
   },
   "portability": {

@@ -1,0 +1,108 @@
+{
+  "train": {
+    "split": "train",
+    "total_images": 8282,
+    "total_boxes": 46840,
+    "avg_boxes_per_image": 5.66,
+    "max_boxes_per_image": 51,
+    "multi_object_images_count": 7307,
+    "multi_object_ratio": 0.882,
+    "class_counts": {
+      "car": 21985,
+      "person": 4261,
+      "motorcycle": 6284,
+      "rider": 5514,
+      "vehicle fallback": 1423,
+      "animal": 538,
+      "bicycle": 1031,
+      "traffic sign": 790,
+      "autorickshaw": 2682,
+      "bus": 655,
+      "traffic light": 372,
+      "truck": 1305
+    },
+    "size_distribution": {
+      "tiny": 12857,
+      "small": 22936,
+      "medium": 9792,
+      "large": 1255
+    },
+    "cars_stats": {
+      "avg_per_image": 2.65,
+      "images_with_car": 7158,
+      "multi_car_images": 3799
+    },
+    "motorcycles_stats": {
+      "avg_per_image": 0.76,
+      "images_with_motorcycle": 3677,
+      "multi_motorcycle_images": 1567
+    },
+    "riders_stats": {
+      "avg_per_image": 0.67,
+      "images_with_rider": 3094
+    },
+    "subset_counts": {
+      "A_multi_car": 3799,
+      "F_small_objects": 4309,
+      "E_dense_traffic": 2084,
+      "C_car_plus_motorcycle": 3316,
+      "D_motorcycle_plus_rider": 2663,
+      "B_multi_motorcycle": 1567,
+      "G_side_view": 41,
+      "H_diagonal_view": 565
+    }
+  },
+  "val": {
+    "split": "val",
+    "total_images": 1719,
+    "total_boxes": 8757,
+    "avg_boxes_per_image": 5.09,
+    "max_boxes_per_image": 20,
+    "multi_object_images_count": 1434,
+    "multi_object_ratio": 0.834,
+    "class_counts": {
+      "car": 4293,
+      "motorcycle": 1156,
+      "person": 551,
+      "rider": 1103,
+      "vehicle fallback": 279,
+      "bicycle": 215,
+      "traffic sign": 242,
+      "autorickshaw": 284,
+      "truck": 250,
+      "bus": 183,
+      "animal": 102,
+      "traffic light": 99
+    },
+    "size_distribution": {
+      "tiny": 1760,
+      "small": 4420,
+      "medium": 2240,
+      "large": 337
+    },
+    "cars_stats": {
+      "avg_per_image": 2.5,
+      "images_with_car": 1535,
+      "multi_car_images": 719
+    },
+    "motorcycles_stats": {
+      "avg_per_image": 0.67,
+      "images_with_motorcycle": 679,
+      "multi_motorcycle_images": 280
+    },
+    "riders_stats": {
+      "avg_per_image": 0.64,
+      "images_with_rider": 620
+    },
+    "subset_counts": {
+      "A_multi_car": 719,
+      "C_car_plus_motorcycle": 587,
+      "D_motorcycle_plus_rider": 506,
+      "E_dense_traffic": 391,
+      "F_small_objects": 623,
+      "B_multi_motorcycle": 280,
+      "H_diagonal_view": 106,
+      "G_side_view": 17
+    }
+  }
+}

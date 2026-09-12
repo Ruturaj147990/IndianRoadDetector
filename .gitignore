@@ -37,3 +37,6 @@ experiments/custom_model/local_test/
 # OS
 Thumbs.db
 .DS_Store
+
+# Training logs
+runs/
