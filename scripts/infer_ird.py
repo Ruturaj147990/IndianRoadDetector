@@ -75,25 +75,37 @@ def resolve_device(device_str: str = "auto") -> Tuple[torch.device, str]:
 
 
 def load_model(weights_path: Optional[str], device: torch.device) -> Tuple[nn.Module, str]:
-    """Load IRD V1 detector and restore checkpoint weights."""
-    model = build_detector(num_classes=NUM_CLASSES)
-    model.to(device)
-    model.eval()
-
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    assert n_params == 4241529, f"Parameter count mismatch: {n_params}"
-
+    """Load IRD V1 detector and restore checkpoint weights with dynamic architecture detection."""
     ckpt_used = "None (initialized weights)"
+    use_atd = False
+    clean_sd = None
     if weights_path and Path(weights_path).exists():
         ckpt_p = Path(weights_path)
         ckpt = torch.load(ckpt_p, map_location=device, weights_only=False)
         if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-            model.load_state_dict(ckpt["model_state_dict"])
+            sd = ckpt["model_state_dict"]
         elif isinstance(ckpt, dict) and "model" in ckpt:
-            model.load_state_dict(ckpt["model"])
+            sd = ckpt["model"]
         elif isinstance(ckpt, dict):
-            model.load_state_dict(ckpt)
+            sd = ckpt
+        else:
+            sd = {}
+        clean_sd = {k.replace("_orig_mod.", ""): v for k, v in sd.items()}
+        if any("atd" in k for k in clean_sd.keys()):
+            use_atd = True
+        elif isinstance(ckpt, dict) and "config" in ckpt:
+            use_atd = ckpt["config"].get("use_atd", False)
         ckpt_used = str(ckpt_p)
+
+    model = build_detector(num_classes=NUM_CLASSES, use_atd=use_atd)
+    model.to(device)
+    model.eval()
+
+    if clean_sd is not None:
+        model.load_state_dict(clean_sd)
+
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Loaded IndianRoadDetector: {n_params:,} parameters (use_atd={use_atd})")
     return model, ckpt_used
 
 

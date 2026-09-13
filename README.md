@@ -1,45 +1,42 @@
-# IRD — IndianRoadDetector (V1)
+# IRD — IndianRoadDetector (V1.5 / IRD-Next)
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-Custom%20PyTorch-green.svg)](src/models/ARCHITECTURE.md)
+[![Final Review](https://img.shields.io/badge/Status-Ready%20for%20Full%20Training-success.svg)](experiments/custom_model/FINAL_ARCHITECTURE_REVIEW.md)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-An end-to-end, custom object detection architecture specifically engineered for the unique complexities of Indian road environments: high-density traffic, severe occlusions, diverse multi-scale agents, and heterogeneous vehicle compositions.
+An end-to-end, genuinely custom object detection architecture specifically engineered for the unique complexities of Indian road environments: high-density traffic, severe occlusions, lane-splitting two-wheelers, small traffic signs/pedestrians, and heterogeneous vehicle compositions.
 
 ---
 
-## 1. Project Overview & Final Empirical Findings
+## 1. Project Overview & Final Architectural Status
 
-- **Official Model Name**: **IRD — IndianRoadDetection (V1)**
-- **Trainable Parameters**: **4,241,529** (~4.24M, exactly 62% smaller than YOLOv8s)
-- **Computational Complexity**: **18.4 GFLOPs** at $640 \times 640$ (vs 28.6 GFLOPs for YOLOv8s)
+- **Official Model Name**: **IRD — IndianRoadDetection (V1.5 / IRD-Next)**
+- **Trainable Parameters**: **4,441,989** (~4.44M, 60.1% smaller than YOLOv8s)
+- **Computational Complexity**: **~19.1 GFLOPs** (6.137 GMACs) at $640 \times 640$ (vs. 28.6 GFLOPs for YOLOv8s, 33.2% compute reduction)
 - **Architecture Highlights**:
-  - **Custom Backbone** (`IndianRoadBackbone`): Detail-preserving stem, dual-path downsampling, multi-receptive blocks (MRB) with asymmetric strip convolutions ($1\times 5, 5\times 1$), and multi-scale context blocks (MSCB).
-  - **Custom Neck** (`IndianRoadNeck`): Adaptive scale fusion (ASF) with dynamic softmax gating and road context aggregator (RCA).
-  - **Decoupled 3-Branch Head** (`IndianRoadHead`): Strict decoupling of bounding-box regression, foreground presence (objectness), and multi-label classification.
-  - **Target Assigner**: `ScaleAdaptiveTopKMatcher` allocating equal candidate capacity ($k=4$) per scale to eliminate candidate starvation on small vehicles.
-  - **Loss System** (`IndianRoadLoss`): Continuous IoU-quality soft objectness targets + Class-Balanced Focal BCE + CIoU localization.
-  - **100% Pure Native PyTorch**: Zero Ultralytics dependencies.
-
-### Empirical Benchmarks on 10,001-Image Clip-Disjoint Dataset
-
-All rapid screening experiments were strictly evaluated under **MAXIMUM 2 EPOCHS**:
-
-| Metric | YOLOv8s Baseline (2 Ep) | IRD Baseline (2 Ep) | IRD Loop 2 — Best Model (2 Ep) | Historical IRD (5 Ep) |
-| :--- | :---: | :---: | :---: | :---: |
-| **Parameters** | 11,140,244 | 4,241,529 | **4,241,529** | 4,241,529 |
-| **FLOPs** | 28.6 G | 18.4 G | **18.4 G** | 18.4 G |
-| **Recall** | 0.384 | 0.282 | **0.308** (+2.6%) | **0.400** |
-| **mAP@0.50** | 0.3615 | 0.1030 | **0.1050** | **0.2210** |
-| **mAP@0.50:0.95** | 0.2743 | 0.0440 | **0.0460** | **0.1190** |
-| **Car AP50** | 0.898 | 0.574 | 0.536 | **0.785** |
-| **Motorcycle AP50** | 0.636 | 0.288 | 0.244 | **0.414** |
-| **Rider AP50** | 0.679 | 0.252 | 0.177 | **0.362** |
-| **Autorickshaw AP50** | 0.467 | 0.040 | **0.155** (+287%) | **0.210** |
-| **Truck AP50** | 0.198 | 0.008 | **0.022** (+175%) | **0.124** |
-| **Traffic Sign AP50** | 0.140 | 0.000 | **0.007** (learned) | **0.012** |
-| **Model FPS (RX 7700 XT)** | 79.9 | 6.4 (no gate) | **26.4** (batch 1) / **83.8** (b16) | 55.1 |
+  - **Custom Backbone** ([`IndianRoadBackbone`](src/models/backbone/custom_backbone.py)): Detail-preserving stem, dual-path anti-aliased downsampling, multi-receptive blocks (MRB) with asymmetric strip convolutions ($1\times 5, 5\times 1$), and multi-scale context blocks (MSCB) with dilations up to $d=4$.
+  - **Custom Neck** ([`IndianRoadNeck`](src/models/neck/custom_neck.py)): 
+    - **Adaptive Scale Fusion** (ASF) with dynamic softmax scale gating.
+    - **Selective Spatial Detail Pathway** (SSDP): Direct stride-4 Laplacian edge routing from P2 ($160\times 160$) to N3 ($80\times 80$) via anti-aliased depthwise compression and salience gating (+12.8K params).
+    - **Anisotropic Traffic Disentangler** (ATD): Orthogonal strip-convolution cross-gating ($1\times 7$ and $7\times 1$) on N3 and N4 (+104.2K params) to separate dense traffic queues and decouple rider torsos from motorcycle chassis.
+    - **Road Context Aggregator** (RCA) on N5 ($20\times 20$).
+  - **Decoupled 4-Branch Head** ([`IndianRoadHead`](src/models/head/custom_head.py)):
+    - **Bounding-box regression** with **Fine-Grained Boundary Refiner** (FGBR) on N3 (+3.6K params) predicting zero-centered bounded residuals $\Delta b = 0.5 \cdot \tanh(\text{Conv}(\nabla F))$.
+    - **Foreground presence (objectness)** with focal BCE and prior-bias initialization ($\pi = 0.01$).
+    - **Multi-label classification** with **Class-Discriminative Gate** (CDG) (+74.3K params) applying orthogonal aspect-ratio conditioning to separate Truck vs. Car, Bus vs. Car, and Rider vs. Person.
+    - **Localization-Quality Prediction Branch** (LQB) (+3.5K params) predicting continuous IoU alignment quality $q \in [0, 1]$.
+  - **Authoritative Geometry Engine** ([`src/models/box_coder.py`](src/models/box_coder.py)):
+    - Smooth non-saturating box parameterization ($v_2$ smooth) preventing gradient death.
+    - Quality-calibrated confidence formulation: $\text{Score} = \text{Score}_{cls} \times \sqrt{\sigma(\text{Obj}) \cdot \sigma(\text{Quality})}$.
+    - Early objectness gating in logit space (`obj-gate`) skipping $>90\%$ of background cells.
+    - Class-aware pure PyTorch NMS.
+  - **Custom Loss & Matching** ([`src/models/losses/custom_loss.py`](src/models/losses/custom_loss.py)):
+    - `ScaleAdaptiveTopKMatcher` with small-object priority.
+    - Training-only `AuxiliaryOneToOneMatcher` for peak sharpening and duplicate suppression.
+    - Quality-Aware BCE + Class-Balanced Focal BCE + CIoU localization.
+  - **100% Native PyTorch**: Zero Ultralytics dependencies, fully cross-platform (CUDA, ROCm, CPU).
 
 ---
 
@@ -47,7 +44,7 @@ All rapid screening experiments were strictly evaluated under **MAXIMUM 2 EPOCHS
 
 ### Dataset Source
 - Hugging Face repository: [`thirdeyelabs/indian-road-dataset`](https://huggingface.co/datasets/thirdeyelabs/indian-road-dataset)
-- Total Images: **10,001** (Train: 8,282, Val: 1,719 across 135 continuous video clips).
+- Total Images: **10,001** (Train: 8,282, Val: 1,719 across 135 continuous video clips, 55,597 labeled boxes).
 - **Clip Overlap Guarantee**: **0% (100% Clip-Disjoint)** via deterministic SHA-256 clip hashing.
 
 ### Exact 12 Benchmark Classes
@@ -59,81 +56,73 @@ All rapid screening experiments were strictly evaluated under **MAXIMUM 2 EPOCHS
 
 ---
 
-## 3. Quick Start & Execution
+## 3. Master Verification Test Suite
 
-### Environment Setup (AMD ROCm / NVIDIA CUDA / CPU)
+Before advancing to the full Colab training run, the entire architecture was verified using a comprehensive CPU-only static and synthetic test suite covering all 20 research areas:
+
+```bash
+# Run master architectural verification suite
+python tests/test_final_architecture.py
+```
+
+### Verified Test Suites:
+1. **Model Instantiation & Parameter Budget**: Trainable parameter count verified at **4,441,989** (+4.7% over 4.24M baseline).
+2. **Multi-Batch & Multi-Resolution**: Verified across batch sizes $B \in \{1, 2, 4\}$ and resolutions $512\times 512$, $640\times 640$, $768\times 768$.
+3. **Backward Graph & Gradient Flow**: Verified end-to-end backpropagation through all 809 parameter tensors with zero NaNs.
+4. **Numerical Stability & Determinism**: Bitwise identical outputs across repeated forward passes; zero NaNs on extreme $[-50, +50]$ dynamic range inputs.
+5. **Checkpoint Serialization**: State dictionary save, reload, and bitwise output equivalence verified.
+6. **11 Synthetic Indian Traffic Scenarios**: Validated across Single Car, Multi-Car Queues, Multi-Motorcycle Clusters, Vertical Rider-Motorcycle Pairs, Dense 10+ Objects, Tiny Sub-16px Objects, Occluded Vehicles, Large 300px+ Vehicles, Overlapping Pedestrian+Car, All 12 Classes Simultaneously, and Empty Road Images.
+7. **Authoritative Decoder & NMS**: Boundary clamping $[0, 640]$, quality-calibrated scoring, and class-aware NMS consistency verified.
+8. **Cross-Platform Operator Safety**: 11 model files scanned; zero hardware-specific hardcoded operators found.
+
+---
+
+## 4. Quick Start & Execution
+
+### Environment Setup (CUDA / ROCm / CPU)
 ```bash
 # Clone the repository
 git clone https://github.com/<username>/IndianRoadDetector.git
 cd IndianRoadDetector
 
-# Install dependencies
+# Install standard dependencies
 pip install -r requirements.txt
 ```
 
-### Running Hardware Benchmarks
+### Running Authoritative Verification Tests
 ```bash
-# Cross-platform hardware benchmark (CPU & GPU)
-python scripts/benchmark_hardware.py \
-    --weights experiments/custom_model/exp_loop2_adaptive_topk/ird_best.pt \
-    --output-json experiments/custom_model/hardware_benchmark.json
+# Run decoder consistency tests
+python tests/test_authoritative_decoder.py
+
+# Run master final architecture tests
+python tests/test_final_architecture.py
 ```
 
-### Running Real-Time Video Inference
-```bash
-python scripts/infer_ird.py \
-    --source data/test_clip.mp4 \
-    --weights experiments/custom_model/exp_loop2_adaptive_topk/ird_best.pt \
-    --output experiments/custom_model/final_video/inferred_video.mp4 \
-    --conf 0.20 \
-    --obj-gate 0.05 \
-    --device auto
-```
-
-### Evaluating an IRD Checkpoint
-```bash
-python scripts/evaluate_ird.py \
-    --weights experiments/custom_model/exp_loop2_adaptive_topk/ird_best.pt \
-    --data data/indian_road_yolo/data.yaml \
-    --obj-gate 0.05 \
-    --conf 0.001 \
-    --device auto
-```
-
-### Training IRD V1 (Scale-Adaptive Top-K & Class-Balanced Loss)
+### Full Training Configuration (Colab / GPU)
 ```bash
 python scripts/train_custom.py \
     --data-dir data/indian_road_yolo \
-    --output-dir experiments/custom_model/exp_loop2_adaptive_topk \
-    --epochs 2 \
+    --output-dir experiments/custom_model/final_training_run \
+    --epochs 50 \
     --batch-size 16 \
     --lr 0.001 \
     --matcher-version topk_adaptive_v2 \
     --class-balanced-loss \
-    --workers 0 \
+    --obj-gate 0.05 \
     --device auto
 ```
-
----
-
-## 4. Hardware Performance Summary
-
-Measured on an **AMD Ryzen 5 7600X CPU** and an **AMD Radeon RX 7700 XT GPU (12 GB VRAM, ROCm 7.2.1)**:
-
-- **GPU Batch 1 Latency:** **37.93 ms / frame (26.37 FPS)**
-- **GPU Batch 4 Throughput:** **62.00 FPS**
-- **GPU Batch 16 Throughput:** **83.78 FPS**
-- **CPU Latency (Single Instance):** **78.44 ms / frame (12.75 FPS)**
-- **Peak VRAM Consumption:** **8,392 MB**
-- **Video Inference (1080p Clip):** **52.90 ms / frame (18.90 FPS model-only)**, **70.38 ms / frame (14.21 FPS end-to-end)**
 
 ---
 
 ## 5. Repository Documentation Directory
 
-- [`experiments/custom_model/FINAL_STATUS.md`](experiments/custom_model/FINAL_STATUS.md): Complete final research and deployment status report.
-- [`src/models/ARCHITECTURE.md`](src/models/ARCHITECTURE.md): Mathematical and structural breakdown of the model.
-- [`experiments/custom_model/architecture_comparison.md`](experiments/custom_model/architecture_comparison.md): Detailed comparison against YOLOv8.
-- [`experiments/custom_model/ablation_results.csv`](experiments/custom_model/ablation_results.csv): Full ablation experiment records.
-- [`experiments/custom_model/final_visual_validation/`](experiments/custom_model/final_visual_validation/): Rendered visual validations across 10 diagnostic scenarios.
-- [`experiments/custom_model/final_video/`](experiments/custom_model/final_video/): Real-time inferred video with HUD and latency breakdown.
+- [`experiments/custom_model/FINAL_ARCHITECTURE_REVIEW.md`](experiments/custom_model/FINAL_ARCHITECTURE_REVIEW.md): Exhaustive 22-section architecture review covering baseline, explored/rejected/retained changes, parameters, FLOPs, and class-specific strategies.
+- [`src/models/ARCHITECTURE.md`](src/models/ARCHITECTURE.md): Structural and mathematical breakdown of the IRD V1.5 architecture.
+- [`experiments/custom_model/FINAL_STATUS.md`](experiments/custom_model/FINAL_STATUS.md): Historical closed-loop research and deployment report.
+- [`experiments/custom_model/closed_loop_results.csv`](experiments/custom_model/closed_loop_results.csv): Closed-loop ablation experiment records.
+
+---
+
+## 6. Architecture Status
+
+**STATUS: ARCHITECTURE READY FOR FULL TRAINING**

@@ -1,0 +1,2 @@
+epoch,train_total_loss,train_box_loss,train_obj_loss,train_cls_loss,train_positives,val_total_loss,val_box_loss,val_obj_loss,val_cls_loss,val_positives,val_mean_iou,val_cls_acc,lr,epoch_time_sec
+1,9.846,0.5513,5.1216,1.968,247248,3.1979,0.415,0.3636,0.759,48549,0.5911,59.7,0.001,674.75

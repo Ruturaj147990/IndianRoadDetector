@@ -357,6 +357,7 @@ def run_evaluation(
     max_samples: Optional[int] = None,
     obj_gate: Optional[float] = None,
     decoder_version: str = "v2_smooth",
+    use_atd: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Execute full IRD V1 benchmark evaluation.
@@ -376,29 +377,60 @@ def run_evaluation(
     print(f"Max Detections / Img: {max_det}")
     print("=" * 65)
 
-    # 2. Build IRD Model
-    model = build_detector(num_classes=NUM_CLASSES)
+    # 2. Inspect Checkpoint & Auto-detect Architecture Configuration
+    weights_loaded = False
+    use_atd_detected = use_atd if use_atd is not None else False
+    loaded_sd = None
+    if weights_path and Path(weights_path).exists():
+        ckpt_p = Path(weights_path)
+        print(f"Inspecting weights from: {ckpt_p}...")
+        ckpt = torch.load(ckpt_p, map_location=device, weights_only=False)
+        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+            loaded_sd = ckpt["model_state_dict"]
+        elif isinstance(ckpt, dict) and "model" in ckpt:
+            loaded_sd = ckpt["model"]
+        elif isinstance(ckpt, dict):
+            loaded_sd = ckpt
+        if loaded_sd is not None:
+            clean_sd = {k.replace("_orig_mod.", ""): v for k, v in loaded_sd.items()}
+            if any("atd" in k for k in clean_sd.keys()):
+                use_atd_detected = True
+                print("Detected AnisotropicTrafficDisentangler (ATD) weights in checkpoint.")
+            elif isinstance(ckpt, dict) and "config" in ckpt and ckpt["config"].get("use_atd", False):
+                use_atd_detected = True
+
+            use_ssdp_detected = any("ssdp" in k for k in clean_sd.keys())
+            if isinstance(ckpt, dict) and "config" in ckpt:
+                use_ssdp_detected = use_ssdp_detected or ckpt["config"].get("use_ssdp", False)
+            if use_ssdp_detected:
+                print("Detected SelectiveSpatialDetailPathway (SSDP) weights in checkpoint.")
+
+            use_fgbr_detected = any("fgbr" in k for k in clean_sd.keys())
+            if isinstance(ckpt, dict) and "config" in ckpt:
+                use_fgbr_detected = use_fgbr_detected or ckpt["config"].get("use_fgbr", False)
+            if use_fgbr_detected:
+                print("Detected FineGrainedBoundaryRefiner (FGBR) weights in checkpoint.")
+
+            loaded_sd = clean_sd
+
+    # 3. Build IRD Model with appropriate architecture
+    model = build_detector(
+        num_classes=NUM_CLASSES,
+        use_atd=use_atd_detected,
+        use_ssdp=use_ssdp_detected,
+        use_fgbr=use_fgbr_detected,
+    )
     model.to(device)
     model.eval()
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Loaded IndianRoadDetector: {n_params:,} trainable parameters")
+    print(f"Loaded IndianRoadDetector: {n_params:,} trainable parameters (use_atd={use_atd_detected}, use_ssdp={use_ssdp_detected}, use_fgbr={use_fgbr_detected})")
 
-    # 3. Load Checkpoint Weights
-    weights_loaded = False
-    if weights_path and Path(weights_path).exists():
-        ckpt_p = Path(weights_path)
-        print(f"Loading weights from: {ckpt_p}...")
-        ckpt = torch.load(ckpt_p, map_location=device, weights_only=False)
-        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-            model.load_state_dict(ckpt["model_state_dict"])
-        elif isinstance(ckpt, dict) and "model" in ckpt:
-            model.load_state_dict(ckpt["model"])
-        elif isinstance(ckpt, dict):
-            model.load_state_dict(ckpt)
+    if loaded_sd is not None:
+        model.load_state_dict(loaded_sd)
         weights_loaded = True
         print("Checkpoint weights successfully restored.")
-    else:
+    elif weights_path:
         print(f"WARNING: Weights path '{weights_path}' not found. Evaluating with initialized weights.")
 
     # 4. Resolve Dataset Paths
@@ -742,6 +774,8 @@ if __name__ == "__main__":
                         help="Path to save evaluation JSON")
     parser.add_argument("--max-samples", type=int, default=None,
                         help="Max number of validation images to evaluate (optional)")
+    parser.add_argument("--use-atd", action="store_true", default=None,
+                        help="Explicitly enable ATD neck module (defaults to auto-detection from checkpoint)")
     parser.add_argument("--run-unit-tests", action="store_true", default=False,
                         help="Run self-contained unit tests before evaluation")
 
@@ -766,4 +800,5 @@ if __name__ == "__main__":
         max_samples=args.max_samples,
         obj_gate=args.obj_gate,
         decoder_version=args.decoder_version,
+        use_atd=args.use_atd,
     )

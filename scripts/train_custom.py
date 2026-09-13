@@ -515,6 +515,9 @@ def train_ird(
     matcher_version: str = "v1_spatial",
     class_balanced_loss: bool = False,
     small_obj_floor: bool = False,
+    use_atd: bool = False,
+    use_ssdp: bool = False,
+    use_fgbr: bool = False,
     device_str: str = "auto",
     workers: int = 2,
     seed: int = 42,
@@ -602,8 +605,8 @@ def train_ird(
     print(f"Validation Samples:       {len(val_dataset):,}")
     print("-" * 82)
 
-    # Use specified workers
-    num_workers = workers
+    # Choose worker count safely
+    num_workers = workers if sys.platform != "win32" else 0
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -624,7 +627,12 @@ def train_ird(
     )
 
     # 4. Initialize IRD Model & Loss
-    model = IndianRoadDetector(num_classes=num_classes).to(device)
+    model = IndianRoadDetector(
+        num_classes=num_classes,
+        use_atd=use_atd,
+        use_ssdp=use_ssdp,
+        use_fgbr=use_fgbr,
+    ).to(device)
     loss_fn = IndianRoadLoss(
         num_classes=num_classes,
         box_weight=box_weight,
@@ -646,6 +654,9 @@ def train_ird(
     print(f"Matcher Version:          {matcher_version}")
     print(f"Class-Balanced Loss:      {class_balanced_loss}")
     print(f"Small-Object Floor (GSO): {small_obj_floor}")
+    print(f"Anisotropic Disentangler: {use_atd}")
+    print(f"Selective Detail (SSDP):  {use_ssdp}")
+    print(f"Fine-Grained Box (FGBR):  {use_fgbr}")
     print("-" * 82)
 
     # 5. Optimizer, Scheduler, and Scaler
@@ -679,6 +690,9 @@ def train_ird(
         "matcher_version": matcher_version,
         "class_balanced_loss": class_balanced_loss,
         "small_obj_floor": small_obj_floor,
+        "use_atd": use_atd,
+        "use_ssdp": use_ssdp,
+        "use_fgbr": use_fgbr,
         "device": str(device),
         "use_amp": amp_active,
         "seed": seed,
@@ -860,6 +874,12 @@ if __name__ == "__main__":
                         help="Enable class-frequency balanced positive focal classification loss")
     parser.add_argument("--small-obj-floor", action="store_true", default=False,
                         help="Enable Guaranteed Small-Object Presence Supervision (GSO floor 0.80 for scale < 96px)")
+    parser.add_argument("--use-atd", action="store_true", default=False,
+                        help="Enable Anisotropic Traffic Disentangler (ATD) on N3 and N4 in neck")
+    parser.add_argument("--use-ssdp", action="store_true", default=False,
+                        help="Enable Selective Spatial Detail Pathway (SSDP) injecting P2 into N3")
+    parser.add_argument("--use-fgbr", action="store_true", default=False,
+                        help="Enable Fine-Grained Boundary Refiner (FGBR) on N3 box regression")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to IRD checkpoint (.pt) to resume training from")
     parser.add_argument("--smoke-test", action="store_true", default=False,
@@ -884,6 +904,9 @@ if __name__ == "__main__":
             matcher_version=args.matcher_version,
             class_balanced_loss=args.class_balanced_loss,
             small_obj_floor=args.small_obj_floor,
+            use_atd=args.use_atd,
+            use_ssdp=args.use_ssdp,
+            use_fgbr=args.use_fgbr,
             device_str=args.device,
             workers=0,
             seed=args.seed,
@@ -910,6 +933,9 @@ if __name__ == "__main__":
             matcher_version=args.matcher_version,
             class_balanced_loss=args.class_balanced_loss,
             small_obj_floor=args.small_obj_floor,
+            use_atd=args.use_atd,
+            use_ssdp=args.use_ssdp,
+            use_fgbr=args.use_fgbr,
             device_str=args.device,
             workers=args.workers,
             seed=args.seed,

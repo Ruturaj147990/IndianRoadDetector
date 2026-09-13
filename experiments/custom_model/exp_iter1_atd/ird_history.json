@@ -1,0 +1,19 @@
+[
+  {
+    "epoch": 1,
+    "train_total_loss": 9.846,
+    "train_box_loss": 0.5513,
+    "train_obj_loss": 5.1216,
+    "train_cls_loss": 1.968,
+    "train_positives": 247248,
+    "val_total_loss": 3.1979,
+    "val_box_loss": 0.415,
+    "val_obj_loss": 0.3636,
+    "val_cls_loss": 0.759,
+    "val_positives": 48549,
+    "val_mean_iou": 0.5911,
+    "val_cls_acc": 59.7,
+    "lr": 0.001,
+    "epoch_time_sec": 674.75
+  }
+]

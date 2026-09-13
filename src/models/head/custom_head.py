@@ -115,14 +115,104 @@ class SpatialDetailPreserver(nn.Module):
         return x + self.gamma * self.pw(self.edge_dw(x))
 
 
+class FineGrainedBoundaryRefiner(nn.Module):
+    """
+    Fine-Grained Boundary Refiner (FGBR) for High-Resolution Regression.
+    
+    Predicts residual spatial corrections for bounding box coordinates from high-frequency
+    gradients, sharpening localization boundaries at high IoU thresholds (0.75 and 0.90)
+    specifically for small and distant traffic participants (two-wheelers, pedestrians, signs).
+    """
+    def __init__(self, in_channels: int = 128) -> None:
+        super().__init__()
+        mid_channels = max(32, in_channels // 4)
+        self.refine_conv = nn.Sequential(
+            ConvBNAct(in_channels, mid_channels, kernel_size=3, groups=mid_channels),
+            nn.Conv2d(mid_channels, 4, kernel_size=1),
+            nn.Tanh(),
+        )
+        self.scale = nn.Parameter(torch.ones(1, 4, 1, 1) * 0.1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.scale * self.refine_conv(x)
+
+
+class LocalizationQualityBranch(nn.Module):
+    """
+    Localization Quality Branch (LQB) for Decoupled Detection Heads.
+    
+    Predicts continuous IoU localization quality q in [0, 1] conditioned on the bounding-box
+    regression feature representation. When supervised with actual CIoU / IoU during training,
+    it allows the model to differentiate between tightly localized and sloppy boxes.
+    At inference time, it calibrates final detection confidence to penalize jittery boxes.
+    """
+    def __init__(self, head_dim: int = 128) -> None:
+        super().__init__()
+        mid_dim = max(32, head_dim // 4)
+        self.quality_conv = nn.Sequential(
+            ConvBNAct(head_dim, mid_dim, kernel_size=3, groups=mid_dim),
+            nn.Conv2d(mid_dim, 1, kernel_size=1),
+        )
+        # Initialize bias to 0.0 so sigmoid(0) = 0.5 (neutral initial quality)
+        nn.init.constant_(self.quality_conv[1].bias, 0.0)
+
+    def forward(self, reg_feat: torch.Tensor) -> torch.Tensor:
+        return self.quality_conv(reg_feat)
+
+
+class ClassDiscriminativeGate(nn.Module):
+    """
+    Class-Discriminative Gate (CDG) for Classification Branch.
+    
+    In dense Indian traffic scenes, vehicle categories exhibit strong aspect-ratio priors:
+    - Slender/Vertical: Person (0), Rider (1), Motorcycle (5), Bicycle (6) [H > W]
+    - Compact/Square: Car (2), Autorickshaw (7), Animal (8) [H ~ W]
+    - Elongated/Massive: Truck (3), Bus (4) [W >> H or large area]
+    
+    CDG combines orthogonal strip depthwise convolutions (1x5 and 5x1) with global
+    squeeze-and-excitation channel modulation to decouple confusing pairs (e.g. truck vs car,
+    bus vs car, rider vs pedestrian).
+    """
+    def __init__(self, channels: int = 128) -> None:
+        super().__init__()
+        mid_dim = max(32, channels // 4)
+        # Aspect-ratio horizontal & vertical strip depthwise convs
+        self.h_strip = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=(1, 5), padding=(0, 2), groups=channels, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.SiLU(inplace=True),
+        )
+        self.v_strip = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=(5, 1), padding=(2, 0), groups=channels, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.SiLU(inplace=True),
+        )
+        # Global channel context excitation
+        self.channel_gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, mid_dim, kernel_size=1),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(mid_dim, channels, kernel_size=1),
+            nn.Sigmoid(),
+        )
+        self.proj = ConvBNAct(channels, channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.ones(1, channels, 1, 1) * 0.1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        strip_mix = self.h_strip(x) + self.v_strip(x)
+        gated = strip_mix * self.channel_gate(strip_mix)
+        return self.gamma * self.proj(gated)
+
+
 class ScaleDecoupledHead(nn.Module):
     """
     Decoupled prediction head for a single feature scale.
     
-    Contains three completely decoupled convolutional branches:
+    Contains four decoupled branches:
       1. Bounding-box regression branch: Predicts 4 box parameters.
       2. Objectness confidence branch: Predicts 1 object presence logit.
-      3. Classification branch: Predicts 12 class logits.
+      3. Classification branch: Predicts 12 class logits with ClassDiscriminativeGate.
+      4. Localization quality branch: Predicts 1 continuous IoU quality logit.
       
     Args:
         in_channels: Input channels from neck (default: 128).
@@ -130,6 +220,9 @@ class ScaleDecoupledHead(nn.Module):
         num_classes: Number of object categories (default: 12).
         is_high_res: Whether this head processes the high-res N3 scale (default: False).
         num_layers: Number of convolutional layers per branch (default: 2).
+        use_fgbr: Whether to enable Fine-Grained Boundary Refiner on regression (default: False).
+        use_quality: Whether to enable Localization Quality Branch (default: True).
+        use_cdg: Whether to enable Class-Discriminative Gate on classification (default: True).
     """
     def __init__(
         self,
@@ -138,12 +231,18 @@ class ScaleDecoupledHead(nn.Module):
         num_classes: int = 12,
         is_high_res: bool = False,
         num_layers: int = 2,
+        use_fgbr: bool = False,
+        use_quality: bool = True,
+        use_cdg: bool = True,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.head_dim = head_dim
         self.num_classes = num_classes
         self.is_high_res = is_high_res
+        self.use_fgbr = use_fgbr
+        self.use_quality = use_quality
+        self.use_cdg = use_cdg
         
         # Spatial detail preservation path for small objects (active on N3)
         self.detail_path = SpatialDetailPreserver(in_channels) if is_high_res else nn.Identity()
@@ -154,6 +253,12 @@ class ScaleDecoupledHead(nn.Module):
             reg_layers.append(DecoupledConvBlock(head_dim, head_dim))
         self.reg_convs = nn.Sequential(*reg_layers)
         self.reg_pred = nn.Conv2d(head_dim, 4, kernel_size=1)
+        if self.use_fgbr and self.is_high_res:
+            self.fgbr = FineGrainedBoundaryRefiner(head_dim)
+            
+        # 1b. Localization Quality Branch (IoU-prediction)
+        if self.use_quality:
+            self.quality_branch = LocalizationQualityBranch(head_dim)
         
         # 2. Objectness Branch (1 confidence value)
         obj_dim = max(32, head_dim // 2)
@@ -163,11 +268,13 @@ class ScaleDecoupledHead(nn.Module):
         self.obj_convs = nn.Sequential(*obj_layers)
         self.obj_pred = nn.Conv2d(obj_dim, 1, kernel_size=1)
         
-        # 3. Classification Branch (12 classes)
+        # 3. Classification Branch (12 classes with ClassDiscriminativeGate)
         cls_layers = [DecoupledConvBlock(in_channels, head_dim)]
         for _ in range(num_layers - 1):
             cls_layers.append(DecoupledConvBlock(head_dim, head_dim))
         self.cls_convs = nn.Sequential(*cls_layers)
+        if self.use_cdg:
+            self.cdg = ClassDiscriminativeGate(head_dim)
         self.cls_pred = nn.Conv2d(head_dim, num_classes, kernel_size=1)
         
         self._init_weights()
@@ -196,7 +303,7 @@ class ScaleDecoupledHead(nn.Module):
         nn.init.constant_(self.cls_pred.bias, bias_value)
         nn.init.constant_(self.obj_pred.bias, bias_value)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass for a single scale.
         
@@ -205,17 +312,32 @@ class ScaleDecoupledHead(nn.Module):
             
         Returns:
             Tuple of:
-              - box_preds: [B, 4, H, W]
-              - obj_preds: [B, 1, H, W]
-              - cls_preds: [B, num_classes, H, W]
+              - box_preds:     [B, 4, H, W]
+              - obj_preds:     [B, 1, H, W]
+              - cls_preds:     [B, num_classes, H, W]
+              - quality_preds: [B, 1, H, W] or None
         """
         feat = self.detail_path(x)
         
-        box_preds = self.reg_pred(self.reg_convs(feat))  # [B, 4, H, W]
-        obj_preds = self.obj_pred(self.obj_convs(feat))  # [B, 1, H, W]
-        cls_preds = self.cls_pred(self.cls_convs(feat))  # [B, num_classes, H, W]
+        # 1. Regression
+        reg_feat = self.reg_convs(feat)
+        box_preds = self.reg_pred(reg_feat)
+        if hasattr(self, "fgbr"):
+            box_preds = box_preds + self.fgbr(reg_feat)
+            
+        # 2. Objectness
+        obj_preds = self.obj_pred(self.obj_convs(feat))
         
-        return box_preds, obj_preds, cls_preds
+        # 3. Classification with CDG
+        cls_feat = self.cls_convs(feat)
+        if hasattr(self, "cdg"):
+            cls_feat = cls_feat + self.cdg(cls_feat)
+        cls_preds = self.cls_pred(cls_feat)
+        
+        # 4. Localization Quality
+        qual_preds = self.quality_branch(reg_feat) if hasattr(self, "quality_branch") else None
+        
+        return box_preds, obj_preds, cls_preds, qual_preds
 
 
 class HeadOutput(dict):
@@ -223,10 +345,10 @@ class HeadOutput(dict):
     Structured container for multi-scale detection head outputs.
     
     Supports:
-      1. Attribute access: output.box_preds, output.obj_preds, output.cls_preds, output.strides
-      2. Dict access: output['box_preds'], output['obj_preds'], output['cls_preds'], output['strides']
-      3. Tuple unpacking: box_preds, obj_preds, cls_preds = output
-      4. Scale accessor: output.get_scale(0) -> {'box': ..., 'obj': ..., 'cls': ..., 'stride': 8}
+      1. Attribute access: output.box_preds, output.obj_preds, output.cls_preds, output.strides, output.quality_preds
+      2. Dict access: output['box_preds'], output['obj_preds'], output['cls_preds'], output['strides'], output['quality_preds']
+      3. Tuple unpacking: box_preds, obj_preds, cls_preds = output (backwards-compatible 3-tuple)
+      4. Scale accessor: output.get_scale(0) -> {'box': ..., 'obj': ..., 'cls': ..., 'stride': 8, 'quality': ...}
     """
     def __init__(
         self,
@@ -234,29 +356,36 @@ class HeadOutput(dict):
         obj_preds: List[torch.Tensor],
         cls_preds: List[torch.Tensor],
         strides: List[int] = [8, 16, 32],
+        quality_preds: Optional[List[torch.Tensor]] = None,
     ) -> None:
         super().__init__(
             box_preds=box_preds,
             obj_preds=obj_preds,
             cls_preds=cls_preds,
             strides=strides,
+            quality_preds=quality_preds,
         )
         self.box_preds = box_preds
         self.obj_preds = obj_preds
         self.cls_preds = cls_preds
         self.strides = strides
+        self.quality_preds = quality_preds
 
     def __iter__(self) -> Iterator[List[torch.Tensor]]:
+        # Preserve backwards compatibility for 3-tuple unpacking
         return iter([self.box_preds, self.obj_preds, self.cls_preds])
 
     def get_scale(self, idx: int) -> Dict[str, Any]:
         """Retrieve prediction tensors and stride for a specific scale index."""
-        return {
+        res = {
             "box": self.box_preds[idx],
             "obj": self.obj_preds[idx],
             "cls": self.cls_preds[idx],
             "stride": self.strides[idx],
         }
+        if self.quality_preds is not None:
+            res["quality"] = self.quality_preds[idx]
+        return res
 
 
 class IndianRoadHead(nn.Module):
@@ -269,9 +398,10 @@ class IndianRoadHead(nn.Module):
       - N5 (stride 32, 20x20): Large objects (buses, trucks, tractors, barricades).
       
     Each head decouples:
-      - Regression: 4 box parameters
+      - Regression: 4 box parameters (with FGBR on N3)
       - Objectness: 1 presence confidence logit
-      - Classification: 12 class logits
+      - Classification: 12 class logits (with ClassDiscriminativeGate)
+      - Localization Quality: 1 continuous IoU quality logit
       
     Args:
         in_channels: Channels from neck (default: 128).
@@ -279,6 +409,9 @@ class IndianRoadHead(nn.Module):
         num_classes: Number of detection classes (default: 12).
         strides: Stride values for [N3, N4, N5] (default: (8, 16, 32)).
         num_layers: Number of convolutional layers per branch (default: 2).
+        use_fgbr: Whether to enable Fine-Grained Boundary Refiner on N3 (default: True).
+        use_quality: Whether to enable Localization Quality Branch (default: True).
+        use_cdg: Whether to enable Class-Discriminative Gate (default: True).
     """
     def __init__(
         self,
@@ -287,6 +420,9 @@ class IndianRoadHead(nn.Module):
         num_classes: int = 12,
         strides: Tuple[int, int, int] = (8, 16, 32),
         num_layers: int = 2,
+        use_fgbr: bool = True,
+        use_quality: bool = True,
+        use_cdg: bool = True,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -294,31 +430,43 @@ class IndianRoadHead(nn.Module):
         self.num_classes = num_classes
         self.num_box_params = 4
         self.strides = list(strides)
+        self.use_fgbr = use_fgbr
+        self.use_quality = use_quality
+        self.use_cdg = use_cdg
         
         # Scale-specialized decoupled heads
-        # Head N3: is_high_res=True enables SpatialDetailPreserver
+        # Head N3: is_high_res=True enables SpatialDetailPreserver & FGBR
         self.head_n3 = ScaleDecoupledHead(
             in_channels=in_channels,
             head_dim=head_dim,
             num_classes=num_classes,
             is_high_res=True,
             num_layers=num_layers,
+            use_fgbr=use_fgbr,
+            use_quality=use_quality,
+            use_cdg=use_cdg,
         )
-        # Head N4: Standard decoupled head
+        # Head N4: Standard decoupled head with CDG and Quality
         self.head_n4 = ScaleDecoupledHead(
             in_channels=in_channels,
             head_dim=head_dim,
             num_classes=num_classes,
             is_high_res=False,
             num_layers=num_layers,
+            use_fgbr=False,
+            use_quality=use_quality,
+            use_cdg=use_cdg,
         )
-        # Head N5: Standard decoupled head
+        # Head N5: Standard decoupled head with CDG and Quality
         self.head_n5 = ScaleDecoupledHead(
             in_channels=in_channels,
             head_dim=head_dim,
             num_classes=num_classes,
             is_high_res=False,
             num_layers=num_layers,
+            use_fgbr=False,
+            use_quality=use_quality,
+            use_cdg=use_cdg,
         )
 
     def forward(
@@ -337,20 +485,24 @@ class IndianRoadHead(nn.Module):
             
         Returns:
             HeadOutput containing:
-              - box_preds: [box_n3, box_n4, box_n5]
-              - obj_preds: [obj_n3, obj_n4, obj_n5]
-              - cls_preds: [cls_n3, cls_n4, cls_n5]
-              - strides:   [8, 16, 32]
+              - box_preds:     [box_n3, box_n4, box_n5]
+              - obj_preds:     [obj_n3, obj_n4, obj_n5]
+              - cls_preds:     [cls_n3, cls_n4, cls_n5]
+              - strides:       [8, 16, 32]
+              - quality_preds: [qual_n3, qual_n4, qual_n5]
         """
-        box_n3, obj_n3, cls_n3 = self.head_n3(n3)
-        box_n4, obj_n4, cls_n4 = self.head_n4(n4)
-        box_n5, obj_n5, cls_n5 = self.head_n5(n5)
+        box_n3, obj_n3, cls_n3, q_n3 = self.head_n3(n3)
+        box_n4, obj_n4, cls_n4, q_n4 = self.head_n4(n4)
+        box_n5, obj_n5, cls_n5, q_n5 = self.head_n5(n5)
+        
+        quality_preds = [q_n3, q_n4, q_n5] if q_n3 is not None else None
         
         return HeadOutput(
             box_preds=[box_n3, box_n4, box_n5],
             obj_preds=[obj_n3, obj_n4, obj_n5],
             cls_preds=[cls_n3, cls_n4, cls_n5],
             strides=self.strides,
+            quality_preds=quality_preds,
         )
 
 
@@ -360,6 +512,9 @@ def build_head(
     num_classes: int = 12,
     strides: Tuple[int, int, int] = (8, 16, 32),
     num_layers: int = 2,
+    use_fgbr: bool = True,
+    use_quality: bool = True,
+    use_cdg: bool = True,
 ) -> IndianRoadHead:
     """Helper factory function to construct an IndianRoadHead instance."""
     return IndianRoadHead(
@@ -368,6 +523,9 @@ def build_head(
         num_classes=num_classes,
         strides=strides,
         num_layers=num_layers,
+        use_fgbr=use_fgbr,
+        use_quality=use_quality,
+        use_cdg=use_cdg,
     )
 
 

@@ -1,0 +1,185 @@
+{
+  "weights": "experiments/custom_model/exp_iter1_atd/ird_best.pt",
+  "eval_images": 500,
+  "conf_threshold": 0.25,
+  "per_class": {
+    "person": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 231,
+      "gt_count": 231,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "rider": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 394,
+      "gt_count": 394,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "car": {
+      "precision": 0.6255,
+      "recall": 0.166,
+      "tp": 167,
+      "fp": 100,
+      "fn": 839,
+      "gt_count": 1006,
+      "mean_iou": 0.742,
+      "mean_conf": 0.3214
+    },
+    "truck": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 96,
+      "gt_count": 100,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "bus": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 72,
+      "gt_count": 72,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "motorcycle": {
+      "precision": 1.0,
+      "recall": 0.0078,
+      "tp": 3,
+      "fp": 0,
+      "fn": 381,
+      "gt_count": 385,
+      "mean_iou": 0.7215,
+      "mean_conf": 0.2635
+    },
+    "bicycle": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 147,
+      "gt_count": 147,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "autorickshaw": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 112,
+      "gt_count": 112,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "animal": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 72,
+      "gt_count": 72,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "vehicle fallback": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 182,
+      "gt_count": 183,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "traffic light": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 61,
+      "gt_count": 61,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    },
+    "traffic sign": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 128,
+      "gt_count": 128,
+      "mean_iou": 0.0,
+      "mean_conf": 0.0
+    }
+  },
+  "density_breakdown": {
+    "1": {
+      "recall": 0.0652,
+      "precision": 0.8571,
+      "gt_count": 92
+    },
+    "2-4": {
+      "recall": 0.0708,
+      "precision": 0.4507,
+      "gt_count": 452
+    },
+    "5-9": {
+      "recall": 0.0619,
+      "precision": 0.608,
+      "gt_count": 1228
+    },
+    "10+": {
+      "recall": 0.05,
+      "precision": 0.8358,
+      "gt_count": 1119
+    }
+  },
+  "size_breakdown": {
+    "tiny": {
+      "recall": 0.0,
+      "precision": 0.0,
+      "gt_count": 468
+    },
+    "small": {
+      "recall": 0.0337,
+      "precision": 0.9242,
+      "gt_count": 1808
+    },
+    "medium": {
+      "recall": 0.1702,
+      "precision": 1.0,
+      "gt_count": 429
+    },
+    "large": {
+      "recall": 0.1935,
+      "precision": 0.973,
+      "gt_count": 186
+    }
+  },
+  "key_confusions": {
+    "truck_predicted_as_car": 4,
+    "bus_predicted_as_car": 0,
+    "motorcycle_predicted_as_car": 1,
+    "rider_predicted_as_person": 0,
+    "person_predicted_as_rider": 0,
+    "person_missed_as_background": 231,
+    "motorcycle_missed_as_background": 381,
+    "rider_missed_as_background": 394
+  },
+  "calibration": {
+    "conf_iou_correlation": 0.2372,
+    "total_candidates_evaluated": 270
+  }
+}

@@ -51,15 +51,25 @@ def benchmark_hardware(
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
+    # Check if checkpoint has ATD
+    use_atd = False
+    clean_sd = None
+    if Path(weights_path).exists():
+        ckpt = torch.load(weights_path, map_location="cpu", weights_only=False)
+        sd = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+        clean_sd = {k.replace("_orig_mod.", ""): v for k, v in sd.items()}
+        use_atd = any("atd" in k for k in clean_sd.keys())
+        if isinstance(ckpt, dict) and "config" in ckpt:
+            use_atd = use_atd or ckpt["config"].get("use_atd", False)
+
     # -------------------------------------------------------------------------
     # 1. CPU Benchmark (AMD Ryzen 5 7600X)
     # -------------------------------------------------------------------------
     print("\n[1/3] Benchmarking CPU (AMD Ryzen 5 7600X)...")
     cpu_device = torch.device("cpu")
-    model_cpu = build_detector(num_classes=12).to(cpu_device).eval()
-    if Path(weights_path).exists():
-        ckpt = torch.load(weights_path, map_location=cpu_device)
-        model_cpu.load_state_dict(ckpt["model_state_dict"])
+    model_cpu = build_detector(num_classes=12, use_atd=use_atd).to(cpu_device).eval()
+    if clean_sd is not None:
+        model_cpu.load_state_dict(clean_sd)
 
     dummy_cpu = torch.randn(1, 3, img_size, img_size, device=cpu_device)
 
@@ -96,10 +106,9 @@ def benchmark_hardware(
     if torch.cuda.is_available():
         gpu_device = torch.device("cuda:0")
         gpu_name = torch.cuda.get_device_name(0)
-        model_gpu = build_detector(num_classes=12).to(gpu_device).eval()
-        if Path(weights_path).exists():
-            ckpt = torch.load(weights_path, map_location=gpu_device)
-            model_gpu.load_state_dict(ckpt["model_state_dict"])
+        model_gpu = build_detector(num_classes=12, use_atd=use_atd).to(gpu_device).eval()
+        if clean_sd is not None:
+            model_gpu.load_state_dict({k: v.to(gpu_device) for k, v in clean_sd.items()})
 
         # Reset peak VRAM tracker
         torch.cuda.reset_peak_memory_stats(gpu_device)

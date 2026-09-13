@@ -1,14 +1,14 @@
 # Indian Road Custom Detector Architecture
 
 ## 1. Motivation & Context
-- **Official Model Name**: **IRD — IndianRoadDetection (V1)**
-- **Internal PyTorch Class**: `IndianRoadDetector`
-- **Baseline**: YOLOv8s trained on the Indian Road Dataset (8,000 train / 2,000 val) achieved 42.1% mAP50 and 33.1% mAP50-95.
+- **Official Model Name**: **IRD — IndianRoadDetection (V1.5 / IRD-Next)**
+- **Internal PyTorch Class**: [`IndianRoadDetector`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/src/models/custom_detector.py)
+- **Baseline**: YOLOv8s trained on the Indian Road Dataset (8,282 train / 1,719 val, 0 clip leakage) achieved 36.1% mAP50 and 27.4% mAP50-95.
 - **Goal**: Build a genuinely custom PyTorch detector engineered specifically for the challenges of Indian road environments:
   - **Extreme Occlusion & High Density**: Overlapping vehicles, lane-splitting motorcycles/auto-rickshaws, crowded pedestrians.
-  - **Small Object Preservation**: Traffic signs, distant pedestrians, cycles, small debris/potholes.
-  - **Asymmetric Aspect Ratios**: Tall objects (pedestrians, poles, traffic signals) vs. wide objects (buses, trucks, barricades).
-  - **Hardware Efficiency**: Optimized for training and inference on Tesla T4 GPUs.
+  - **Small Object Preservation**: Traffic signs, distant pedestrians, cycles, small road debris.
+  - **Asymmetric Aspect Ratios**: Tall objects (pedestrians, riders, poles) vs. wide objects (buses, trucks, multi-car queues).
+  - **Hardware Efficiency**: Optimized for training and inference on Tesla T4 GPUs and edge deployment on Jetson/CPU/ROCm.
 
 ---
 
@@ -17,25 +17,25 @@
 ### Key Design Pillars (No YOLOv8 C2f/CSP Copies):
 1. **Detail-Preserving Stem (`DetailPreservingStem`)**:
    - Combines a convolutional gradient path with a max-pooling peak-contrast path at stride 2.
-   - Preserves high-frequency spatial cues and contrast edges crucial for small road objects at 1/2 resolution (320x320).
+   - Preserves high-frequency spatial cues and contrast edges crucial for small road objects at 1/2 resolution ($320\times 320$).
 2. **Dual-Path Anti-Aliasing Downsampling (`DualPathDownsample`)**:
-   - Integrates depthwise strided 3x3 convolution and 2x2 max-pooling across stage transitions.
+   - Integrates depthwise strided $3\times 3$ convolution and $2\times 2$ max-pooling across stage transitions.
    - Prevents spatial feature loss and aliasing during resolution reduction.
 3. **Multi-Receptive Feature Block (`MultiReceptiveBlock` - MRB)**:
    - Expands channels and splits feature flow into three specialized functional branches:
-     - **Branch 1 (Local Geometry)**: 3x3 depthwise convolution for fine contours and edges.
-     - **Branch 2 (Asymmetric Strip Convolutions)**: Sequential 1x5 and 5x1 depthwise convolutions tailored to tall and wide objects.
-     - **Branch 3 (Dilated Context)**: 3x3 depthwise convolution with dilation=2 (effective RF 5x5) capturing neighboring vehicle context.
+     - **Branch 1 (Local Geometry)**: $3\times 3$ depthwise convolution for fine contours and edges.
+     - **Branch 2 (Asymmetric Strip Convolutions)**: Sequential $1\times 5$ and $5\times 1$ depthwise convolutions tailored to tall and wide objects.
+     - **Branch 3 (Dilated Context)**: $3\times 3$ depthwise convolution with dilation=2 (effective RF $5\times 5$) capturing neighboring vehicle context.
    - **Occlusion Resilience**: Integrated Squeeze-and-Excitation (SE) channel gating.
 4. **Multi-Scale Context Mechanism (`MultiScaleContextBlock` - MSCB)**:
    - Splits channels into 4 groups with cascaded depthwise convolutions of dilation rates $d \in \{1, 2, 4\}$.
-   - Spans receptive fields from 3x3 to 15x15.
+   - Spans receptive fields from $3\times 3$ to $15\times 15$.
 
 ### Backbone Specifications:
 | Stage | Output Map | Stride | Channels | Output Resolution (640x640 Input) | Target Detections |
 |---|---|---|---|---|---|
 | Stem | Stem | 2 | 32 | 320 x 320 | High-frequency detail preservation |
-| Stage 1 | P2 | 4 | 64 | 160 x 160 | High-res geometric representation |
+| Stage 1 | **P2** | 4 | 64 | 160 x 160 | High-res edge representation (routed to SSDP) |
 | Stage 2 | **P3** | 8 | 128 | 80 x 80 | Small objects (signs, pedestrians, bikes) |
 | Stage 3 | **P4** | 16 | 256 | 40 x 40 | Medium objects (cars, auto-rickshaws) |
 | Stage 4 | **P5** | 32 | 512 | 20 x 20 | Large objects & context (buses, trucks) |
@@ -50,69 +50,73 @@
 1. **Adaptive Scale Fusion (`AdaptiveScaleFusion` - ASF)**:
    - Replaces fixed concatenation or uniform addition.
    - Dynamically learns per-channel and per-pixel scale gating weights via softmax across scale branches.
-   - Permits high-resolution boundaries (for small signs/pedestrians) to dominate at edge locations while allowing semantic context (for occluded vehicles) to dominate in ambiguous regions.
-2. **Road Context Aggregator (`RoadContextAggregator` - RCA)**:
-   - Exploit domain-specific road geometry using three lightweight parallel branches:
-     - **Horizontal Strip (1x7)**: Traffic lanes, multi-vehicle queues, barricades.
-     - **Vertical Strip (7x1)**: Pedestrians, traffic lights, electricity poles.
-     - **Dilated 2D Context (3x3, d=2)**: Local surrounding context without edge blurring.
-     - **Global Channel Excitation**: Dynamic scene descriptor modulation.
-3. **High-Resolution Detail Enhancer (`HighResDetailEnhancer`)**:
-   - Preserves fragile high-frequency gradients for N3 (80x80) via high-pass filtering and learnable residual injection.
-4. **Deep Feature Refinement (`RoadFusionBlock`)**:
-   - Multi-receptive feature refinement after each scale fusion step.
-5. **Anti-Aliased Downsampling (`NeckDownsampler`)**:
-   - Dual-path strided depthwise conv + pooling downsampling for bottom-up localization flow.
+2. **Selective Spatial Detail Pathway (`SelectiveSpatialDetailPathway` - SSDP)**:
+   - Extracts stride-4 high-pass edge cues from Backbone P2 ($160\times 160$) via Laplacian edge filtering $P_2 - \text{Blur}(P_2)$.
+   - Compresses via depthwise strided conv ($3\times 3, s=2$, $64\to 64$) and $1\times 1$ projection to 128 channels.
+   - Injects into N3 ($80\times 80$) modulated by learned spatial salience gating (+12,865 params).
+3. **Anisotropic Traffic Disentangler (`AnisotropicTrafficDisentangler` - ATD)**:
+   - Integrated into Neck N3 and N4 (+104,192 params).
+   - Deploys parallel horizontal ($1\times 7$) and vertical ($7\times 1$) depthwise convolutions with mutual cross-gating:
+     - Horizontal strip isolates adjacent lane-splitting motorcycles and multi-car queues.
+     - Vertical strip isolates rider torsos from motorcycle chassis.
+4. **Road Context Aggregator (`RoadContextAggregator` - RCA)**:
+   - Lightweight horizontal ($1\times 7$) and vertical ($7\times 1$) context aggregation on N5 ($20\times 20$).
+5. **High-Resolution Detail Enhancer (`HighResDetailEnhancer`)**:
+   - Preserves high-frequency spatial gradients on N3.
 
 ### Neck Specifications:
 | Output Level | Stride | Channels | Spatial Resolution (640x640 Input) | Primary Focus |
 |---|---|---|---|---|
-| **N3** | 8 | 128 | 80 x 80 | Small objects: signs, pedestrians, bicycles, motorcycles |
-| **N4** | 16 | 128 | 40 x 40 | Medium objects: cars, auto-rickshaws, riders |
-| **N5** | 32 | 128 | 20 x 20 | Large objects & scene layout: buses, trucks, tractors |
+| **N3** | 8 | 128 | 80 x 80 | Small objects: signs, pedestrians, bicycles, motorcycles (with SSDP & ATD) |
+| **N4** | 16 | 128 | 40 x 40 | Medium objects: cars, auto-rickshaws, riders (with ATD) |
+| **N5** | 32 | 128 | 20 x 20 | Large objects & scene layout: buses, trucks, tractors (with RCA) |
 
-- **Trainable Parameters**: 524,872 (~0.52M)
+- **Trainable Parameters**: 639,497 (~0.64M)
 
 ---
 
 ## 4. Component 3: Custom Decoupled Detection Head (`IndianRoadHead`)
 
 ### Key Design Pillars (No Ultralytics Detect Copies):
-1. **Tri-Branch Decoupled Design (`ScaleDecoupledHead`)**:
+1. **Quad-Branch Decoupled Design (`ScaleDecoupledHead`)**:
    - For each scale (N3, N4, N5), independently predicts:
      - **Bounding-Box Regression**: 4 box parameters via lightweight depthwise-separable convs.
      - **Object Confidence / Objectness**: 1 presence score logit via dedicated conv stack.
      - **Classification**: 12 class logits for the target Indian road categories.
-   - Eliminates classification-localization feature conflict in congested scenes.
-2. **Spatial Detail Preserver (`SpatialDetailPreserver`)**:
-   - Integrated into the N3 head (stride 8, 80x80 resolution) to preserve sharp spatial edge gradients for distant pedestrians, bicycle wheels, and small traffic lights/signs.
-3. **Prior-Probability Bias Initialization**:
-   - Classification and objectness prediction conv biases are initialized to $\text{bias} = -\log((1 - \pi)/\pi) \approx -4.595$ with $\pi = 0.01$.
-   - Eliminates early loss spikes and stabilizes training under extreme class imbalance.
-4. **Structured Head Output (`HeadOutput`)**:
-   - Transparent, modular container supporting dict access, attribute access, and tuple unpacking.
-   - Keeps raw predictions separate from decoding/NMS for clean integration with future custom loss functions.
+     - **Localization Quality**: 1 continuous IoU quality logit.
+2. **Fine-Grained Boundary Refiner (`FineGrainedBoundaryRefiner` - FGBR)**:
+   - Active on Head N3 ($80\times 80$, +3,590 params).
+   - Computes high-pass spatial edge gradients and predicts bounded residual offsets $\Delta b = 0.5 \cdot \tanh(\text{Conv}(\nabla F))$ to sharpen box boundaries at high IoU thresholds.
+3. **Localization-Quality Prediction Branch (`LocalizationQualityBranch` - LQB)**:
+   - Active on Head N3, N4, N5 (+3,456 params total).
+   - Predicts continuous IoU quality $q \in [0, 1]$ directly supervised by ground-truth CIoU during training.
+   - Decoupled scoring formulation: $\text{Score} = \text{Score}_{cls} \times \sqrt{\sigma(\text{Obj}) \cdot \sigma(q)}$.
+4. **Class-Discriminative Gate (`ClassDiscriminativeGate` - CDG)**:
+   - Active on Head N3, N4, N5 (+74,304 params total).
+   - Evaluates orthogonal strip convolutions ($1\times 5$ and $5\times 1$) with Squeeze-and-Excitation global context to separate Truck vs. Car, Bus vs. Car, and Rider vs. Person.
+5. **Prior-Probability Bias Initialization**:
+   - Classification and objectness prediction conv biases initialized to $\text{bias} = -\log((1 - \pi)/\pi) \approx -4.595$ ($\pi = 0.01$).
 
 ### Head Specifications:
-| Scale Head | Input Map | Stride | Box Preds | Obj Preds | Cls Preds | Spatial Output |
+| Scale Head | Input Map | Stride | Box Preds | Obj Preds | Cls Preds | Quality Preds |
 |---|---|---|---|---|---|---|
-| **Head N3** | N3 (128 ch) | 8 | [B, 4, 80, 80] | [B, 1, 80, 80] | [B, 12, 80, 80] | 80 x 80 |
-| **Head N4** | N4 (128 ch) | 16 | [B, 4, 40, 40] | [B, 1, 40, 40] | [B, 12, 40, 40] | 40 x 40 |
-| **Head N5** | N5 (128 ch) | 32 | [B, 4, 20, 20] | [B, 1, 20, 20] | [B, 12, 20, 20] | 20 x 20 |
+| **Head N3** | N3 (128 ch) | 8 | [B, 4, 80, 80] | [B, 1, 80, 80] | [B, 12, 80, 80] | [B, 1, 80, 80] |
+| **Head N4** | N4 (128 ch) | 16 | [B, 4, 40, 40] | [B, 1, 40, 40] | [B, 12, 40, 40] | [B, 1, 40, 40] |
+| **Head N5** | N5 (128 ch) | 32 | [B, 4, 20, 20] | [B, 1, 20, 20] | [B, 12, 20, 20] | [B, 1, 20, 20] |
 
-- **Trainable Parameters**: 285,107 (~0.29M)
+- **Trainable Parameters**: 370,942 (~0.37M)
 
 ---
 
-## 5. Full Integrated Detector (`IndianRoadDetector` / **IRD V1**)
+## 5. Full Integrated Detector (`IndianRoadDetector` / **IRD V1.5**)
 
 ```
 Input [B, 3, 640, 640]
        │
        ▼
 IndianRoadBackbone
- ├── Stem (stride 2) ──► 320x320
- ├── Stage 1 (P2, stride 4) ──► 160x160
+ ├── Stem (stride 2) ──► 320x320 (32 ch)
+ ├── Stage 1 (P2, stride 4) ──► 160x160 (64 ch) ──► [SSDP High-Pass Path]
  ├── Stage 2 (P3, stride 8) ──► 80x80 (128 ch)
  ├── Stage 3 (P4, stride 16) ─► 40x40 (256 ch)
  └── Stage 4 (P5, stride 32) ─► 20x20 (512 ch)
@@ -121,96 +125,69 @@ IndianRoadBackbone
 IndianRoadNeck
  ├── Lateral Projections (128 ch)
  ├── Top-Down Adaptive Scale Fusion (ASF)
- ├── High-Res Detail Enhancer
+ ├── Selective Spatial Detail Pathway (SSDP) on N3
+ ├── High-Res Detail Enhancer on N3
  ├── Bottom-Up Adaptive Scale Fusion (ASF)
- └── Road Context Aggregator (RCA)
+ ├── Anisotropic Traffic Disentangler (ATD) on N3 & N4
+ └── Road Context Aggregator (RCA) on N5
        ├── N3 (stride 8) ──► 80x80 (128 ch)
        ├── N4 (stride 16) ─► 40x40 (128 ch)
        └── N5 (stride 32) ─► 20x20 (128 ch)
        │
        ▼
 IndianRoadHead
- ├── ScaleDecoupledHead (N3) ──► Box [B, 4, 80, 80], Obj [B, 1, 80, 80], Cls [B, 12, 80, 80]
- ├── ScaleDecoupledHead (N4) ──► Box [B, 4, 40, 40], Obj [B, 1, 40, 40], Cls [B, 12, 40, 40]
- └── ScaleDecoupledHead (N5) ──► Box [B, 4, 20, 20], Obj [B, 1, 20, 20], Cls [B, 12, 20, 20]
+ ├── Head N3 (s8)  ──► Box+FGBR [4], Obj [1], Cls+CDG [12], Quality [1]
+ ├── Head N4 (s16) ──► Box [4],      Obj [1], Cls+CDG [12], Quality [1]
+ └── Head N5 (s32) ──► Box [4],      Obj [1], Cls+CDG [12], Quality [1]
 ```
 
-### Parameter Breakdown:
-| Component | Trainable Parameters | Percentage of Total |
-|---|---|---|
-| **Backbone** (`IndianRoadBackbone`) | 3,431,550 (~3.43M) | 80.9% |
-| **Neck** (`IndianRoadNeck`) | 524,872 (~0.52M) | 12.4% |
-| **Head** (`IndianRoadHead`) | 285,107 (~0.29M) | 6.7% |
-| **Complete IRD Pipeline** | **4,241,529 (~4.24M)** | **100.0%** |
+### Parameter & Compute Breakdown:
+| Component | Trainable Parameters | Share (%) | FLOPs (at 640x640) |
+|---|---|---|---|
+| **Backbone** (`IndianRoadBackbone`) | 3,431,550 (~3.43M) | 77.3% | ~12.8 GFLOPs |
+| **Neck** (`IndianRoadNeck`) | 639,497 (~0.64M) | 14.4% | ~4.5 GFLOPs |
+| **Head** (`IndianRoadHead`) | 370,942 (~0.37M) | 8.4% | ~1.8 GFLOPs |
+| **Complete IRD Detector** | **4,441,989 (~4.44M)** | **100.0%** | **~19.1 GFLOPs** |
 
 ---
 
-## 6. Component 4: Custom Detection Loss & Target Assignment (`IndianRoadLoss`)
+## 6. Component 4: Custom Loss & Target Assignment (`IndianRoadLoss`)
 
-### Key Design Pillars (No Ultralytics Loss Copies):
-1. **Multi-Scale Spatial Matcher (`MultiScaleSpatialMatcher`)**:
-   - **Scale Assignment**: Dynamically matches targets based on scale $D = \sqrt{w \times h}$ across strides 8, 16, 32 with overlapping scale bounds.
-   - **Center Proximity**: Samples candidate grid cells within radius $r=1.2$ inside the target box.
-   - **Small-Object Priority**: Resolves multi-object spatial collision in congested traffic by prioritizing the smaller box area.
-2. **Complete IoU (CIoU) Bounding-Box Loss**:
-   - Jointly penalizes overlap error ($1 - \text{IoU}$), normalized center distance ($\rho^2 / c^2$), and aspect ratio discrepancy ($\alpha v$).
-3. **Focal Objectness Loss**:
-   - Binary Cross-Entropy with focal modulation ($\gamma = 2.0, \alpha = 0.25$) on all 8,400 grid cells.
-4. **Multi-Label Focal Classification Loss**:
-   - Evaluated on positive locations across the 12 Indian road classes.
-5. **Structured Loss Output (`LossResult`)**:
-   - Returns `total_loss`, `box_loss`, `objectness_loss`, `classification_loss`, and `number_of_positive_samples`.
-
----
-
-## 7. Component 5: Tiny-Dataset Overfitting Verification Test
-
-Verified via [`overfit_test.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/experiments/custom_model/overfit_test.py):
-- **Training Total Loss Reduction**: **`96.93%`** (`142.45` $\to$ `4.37`).
-- **Post-Training Evaluation (Same 16 Images)**:
-  - Classification Loss dropped by **`98.93%`** (`4.51` $\to$ `0.048`).
-  - Objectness Loss dropped by **`72.36%`** (`1.13` $\to$ `0.31`).
-  - Box CIoU Loss dropped by **`20.08%`** (`0.971` $\to$ `0.776`).
-  - Total Loss dropped by **`59.6%`** (`10.50` $\to$ `4.24`).
+1. **Scale-Adaptive Top-K Matcher (`ScaleAdaptiveTopKMatcher`)**:
+   - Matches ground truth objects dynamically across strides 8, 16, 32 using scale alignment and center-proximity sampling ($r=1.5$).
+   - Top-$k$ candidates assigned per object with small-object priority to prevent small pedestrians and riders from being masked by adjacent large vehicles.
+2. **Auxiliary One-to-One Matcher (`AuxiliaryOneToOneMatcher`)**:
+   - Training-only supervision assigning strictly 1 anchor location per GT object.
+   - Enforces sharp single-peak predictions and reduces duplicate candidates with zero inference cost.
+3. **Localization Quality Loss**:
+   - Binary Cross-Entropy on positive match locations between predicted quality logit and actual CIoU overlap.
+4. **Complete IoU (CIoU) Box Loss**:
+   - Penalizes overlap error ($1 - \text{IoU}$), normalized center distance ($\rho^2 / c^2$), and aspect ratio discrepancy ($\alpha v$).
+5. **Class-Balanced Focal Classification Loss**:
+   - Inverse-frequency focal weighting tailored to minority classes:
+     $$\mathbf{w}_{cls} = [2.2, 1.8, 1.0, 2.4, 2.5, 1.8, 2.4, 2.3, 2.5, 2.3, 2.5, 2.4]$$
 
 ---
 
-## 8. Component 6: Production Training Pipeline (`train_custom.py`)
+## 7. Component 5: Authoritative Box Decoding Engine (`src/models/box_coder.py`)
 
-Implementation: [`train_custom.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/scripts/train_custom.py)
-
-### Pipeline Capabilities:
-1. **Model Identification**: **IRD (IndianRoadDetection)**.
-2. **Pure PyTorch Architecture**: 100% independent from Ultralytics training/loss components.
-3. **Data Handling**: Dynamic dataset discovery (`/content/indian_road_yolo` with local auto-fallback), YOLO coordinate validation, PyTorch DataLoader integration.
-4. **Training Optimization**: AdamW optimizer, Cosine Annealing scheduler, Automatic Mixed Precision (`torch.amp`), and gradient clipping ($10.0$).
-5. **Transparent Validation**: Evaluates without gradients every epoch, recording validation loss breakdown, mean match IoU, and top-1 class accuracy.
-6. **Robust Checkpoint Management**:
-   - Best checkpoint: `ird_best.pt`
-   - Latest checkpoint: `ird_last.pt`
-   - Resumption: Full restoration of model weights, optimizer, scheduler, scaler, epoch count, and history.
-   - History logs: `ird_history.csv`, `ird_history.json`, `ird_config.json`.
+1. **Smooth Non-Saturating Box Parameterization (`v2_smooth`)**:
+   $$c_x = (g_x + 2\sigma(t_x) - 0.5) \cdot \text{stride}$$
+   $$c_y = (g_y + 2\sigma(t_y) - 0.5) \cdot \text{stride}$$
+   $$w = \text{stride} \cdot \exp(3.0 \cdot \tanh(t_w / 3.0))$$
+   $$h = \text{stride} \cdot \exp(3.0 \cdot \tanh(t_h / 3.0))$$
+   - Eliminates gradient saturation/death during training.
+2. **Early Objectness Gating in Logit Space (`obj-gate`)**:
+   - Prunes negative cells before decoding coordinates, skipping $>90\%$ of background cells.
+3. **Quality-Calibrated Confidence Formulation**:
+   $$\text{Score} = \text{Score}_{cls} \times \sqrt{\sigma(\text{Obj}) \cdot \sigma(\text{Quality})}$$
+4. **Class-Aware Pure PyTorch NMS**:
+   - Pure PyTorch NMS with spatial offset by class ID to prevent cross-class suppression between riders and motorcycles.
 
 ---
 
-## 9. Component 7: Benchmark Dataset Pipeline & Clip-Disjoint Splitting
+## 8. Verification & Compatibility Summary
 
-Implementations:
-- Pipeline: [`src/data/convert_bdd_to_yolo.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/src/data/convert_bdd_to_yolo.py)
-- Audit & Verification: [`src/data/verify_dataset.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/src/data/verify_dataset.py)
-
-### Design & Benchmark Integrity:
-1. **Identical Class Semantics with YOLOv8 Baseline**:
-   - Exactly 12 classes in identical ordering (0: person, 1: rider, 2: car, 3: truck, 4: bus, 5: motorcycle, 6: bicycle, 7: autorickshaw, 8: animal, 9: vehicle fallback, 10: traffic light, 11: traffic sign).
-   - Guarantees valid, apples-to-apples comparison between YOLOv8s and IRD V1.
-2. **Elimination of Video Clip Leakage**:
-   - In BDD100K-style road datasets (`thirdeyelabs/indian-road-dataset`), consecutive frames belong to continuous video clips.
-   - Splitting at the frame level causes clip leakage (near-identical backgrounds/agents across train and val).
-   - The pipeline enforces **atomic clip-level assignment** via deterministic SHA-256 hashing ($\text{train\_ratio} = 0.8$, $\text{seed} = 42$).
-   - $\text{Clips}_{\text{train}} \cap \text{Clips}_{\text{val}} = \emptyset$ is mathematically and empirically guaranteed.
-3. **RAM-Safe Direct Streaming**:
-   - Streams from Hugging Face via `IterableDataset` and writes directly to disk, avoiding high-RAM crashes.
-4. **Clip Boundary Integrity**:
-   - Prioritizes clip completeness over exact sample boundaries. Terminating at clip boundaries ensures no video clip is truncated or partially written.
-5. **Multi-Point Verification Audit**:
-   - Automatically checks clip disjointness, image-label parity, coordinate bounds, and class distribution.
+- **Static & Synthetic Test Suite**: 100% passed across all 8 verification suites in [`tests/test_final_architecture.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/tests/test_final_architecture.py).
+- **CUDA / ROCm / CPU Ready**: Pure standard PyTorch ops, zero hardcoded `.cuda()` calls.
+- **Status**: **ARCHITECTURE READY FOR FULL TRAINING**

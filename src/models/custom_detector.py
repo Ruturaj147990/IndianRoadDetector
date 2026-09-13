@@ -93,12 +93,22 @@ class IndianRoadDetector(nn.Module):
         head_dim: int = 128,
         head_layers: int = 2,
         strides: Tuple[int, int, int] = (8, 16, 32),
+        use_atd: bool = True,
+        use_ssdp: bool = True,
+        use_fgbr: bool = True,
+        use_quality: bool = True,
+        use_cdg: bool = True,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.in_channels = in_channels
         self.neck_channels = neck_channels
         self.strides = list(strides)
+        self.use_atd = use_atd
+        self.use_ssdp = use_ssdp
+        self.use_fgbr = use_fgbr
+        self.use_quality = use_quality
+        self.use_cdg = use_cdg
         
         # 1. Custom Backbone
         self.backbone = IndianRoadBackbone(
@@ -114,15 +124,20 @@ class IndianRoadDetector(nn.Module):
             in_channels=backbone_out_channels,
             neck_channels=neck_channels,
             num_refine_blocks=neck_refine_blocks,
+            use_atd=use_atd,
+            use_ssdp=use_ssdp,
         )
         
-        # 3. Custom Decoupled Detection Head
+        # 3. Custom Decoupled Detection Head (with FGBR, LQB, and CDG)
         self.head = IndianRoadHead(
             in_channels=neck_channels,
             head_dim=head_dim,
             num_classes=num_classes,
             strides=strides,
             num_layers=head_layers,
+            use_fgbr=use_fgbr,
+            use_quality=use_quality,
+            use_cdg=use_cdg,
         )
 
     def forward_features(
@@ -140,8 +155,12 @@ class IndianRoadDetector(nn.Module):
               - backbone_features: (P3, P4, P5)
               - neck_features:     (N3, N4, N5)
         """
-        p3, p4, p5 = self.backbone(x)
-        n3, n4, n5 = self.neck(p3, p4, p5)
+        if self.use_ssdp:
+            p2, p3, p4, p5 = self.backbone(x, return_p2=True)
+            n3, n4, n5 = self.neck(p3, p4, p5, p2=p2)
+        else:
+            p3, p4, p5 = self.backbone(x)
+            n3, n4, n5 = self.neck(p3, p4, p5)
         return (p3, p4, p5), (n3, n4, n5)
 
     def forward(
@@ -165,12 +184,15 @@ class IndianRoadDetector(nn.Module):
             If return_features is True, returns (HeadOutput, features_dict).
         """
         # 1. Feature extraction through custom backbone
-        p3, p4, p5 = self.backbone(x)
+        p2 = None
+        if self.use_ssdp:
+            p2, p3, p4, p5 = self.backbone(x, return_p2=True)
+            n3, n4, n5 = self.neck(p3, p4, p5, p2=p2)
+        else:
+            p3, p4, p5 = self.backbone(x)
+            n3, n4, n5 = self.neck(p3, p4, p5)
         
-        # 2. Multi-scale feature fusion through custom neck
-        n3, n4, n5 = self.neck(p3, p4, p5)
-        
-        # 3. Prediction through decoupled detection head
+        # 2. Prediction through decoupled detection head
         head_output = self.head(n3, n4, n5)
         
         if return_features:
@@ -230,8 +252,12 @@ class IndianRoadDetector(nn.Module):
         self.eval()
         with torch.no_grad():
             dummy = torch.zeros(*input_size, dtype=torch.float32, device=next(self.parameters()).device)
-            p3, p4, p5 = self.backbone(dummy)
-            n3, n4, n5 = self.neck(p3, p4, p5)
+            if self.use_ssdp:
+                p2, p3, p4, p5 = self.backbone(dummy, return_p2=True)
+                n3, n4, n5 = self.neck(p3, p4, p5, p2=p2)
+            else:
+                p3, p4, p5 = self.backbone(dummy)
+                n3, n4, n5 = self.neck(p3, p4, p5)
             out = self.head(n3, n4, n5)
         if was_training:
             self.train()
@@ -387,7 +413,8 @@ if __name__ == "__main__":
     dummy_loss = (
         sum(b.sum() for b in out_g.box_preds) +
         sum(o.sum() for o in out_g.obj_preds) +
-        sum(c.sum() for c in out_g.cls_preds)
+        sum(c.sum() for c in out_g.cls_preds) +
+        (sum(q.sum() for q in out_g.quality_preds) if out_g.quality_preds is not None else 0)
     )
     dummy_loss.backward()
 

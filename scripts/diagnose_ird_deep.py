@@ -68,10 +68,23 @@ def run_deep_diagnostics(
     device = torch.device("cuda" if (device_str == "auto" and torch.cuda.is_available()) or device_str == "cuda" else "cpu")
     print(f"[Deep Diagnostics] Loading weights from {weights_path} on {device}...")
     
-    detector = build_detector(num_classes=NUM_CLASSES)
     ckpt = torch.load(weights_path, map_location=device, weights_only=False)
-    state_dict = ckpt.get("model_state_dict", ckpt)
+    state_dict = ckpt.get("model_state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
     clean_sd = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    use_atd = any("atd" in k for k in clean_sd.keys())
+    if isinstance(ckpt, dict) and "config" in ckpt:
+        use_atd = use_atd or ckpt["config"].get("use_atd", False)
+
+    use_ssdp = any("ssdp" in k for k in clean_sd.keys())
+    if isinstance(ckpt, dict) and "config" in ckpt:
+        use_ssdp = use_ssdp or ckpt["config"].get("use_ssdp", False)
+
+    use_fgbr = any("fgbr" in k for k in clean_sd.keys())
+    if isinstance(ckpt, dict) and "config" in ckpt:
+        use_fgbr = use_fgbr or ckpt["config"].get("use_fgbr", False)
+
+    print(f"[Deep Diagnostics] Initializing detector (use_atd={use_atd}, use_ssdp={use_ssdp}, use_fgbr={use_fgbr})...")
+    detector = build_detector(num_classes=NUM_CLASSES, use_atd=use_atd, use_ssdp=use_ssdp, use_fgbr=use_fgbr)
     detector.load_state_dict(clean_sd)
     detector.to(device)
     detector.eval()

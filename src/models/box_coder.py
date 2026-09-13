@@ -201,12 +201,19 @@ def decode_ird_predictions_authoritative(
         y2 = decoded_boxes[:, 3].clamp(min=0.0, max=float(img_size))
         clamped_boxes = torch.stack([x1, y1, x2, y2], dim=-1)
 
-        # 5. Probabilities
+        # 5. Probabilities & Quality Calibration
         obj_prob = torch.sigmoid(o_logit_flat[surviving_indices]).unsqueeze(1)  # [K, 1]
         c_flat = c_pred.permute(1, 2, 0).reshape(-1, NUM_CLASSES)
         cls_prob = torch.sigmoid(c_flat[surviving_indices])  # [K, 12]
 
-        comb_scores = obj_prob * cls_prob  # [K, 12]
+        if hasattr(head_output, "quality_preds") and head_output.quality_preds is not None and len(head_output.quality_preds) > s_idx:
+            q_pred = head_output.quality_preds[s_idx][0, 0].reshape(-1)
+            quality_prob = torch.sigmoid(q_pred[surviving_indices]).unsqueeze(1)  # [K, 1]
+            # Formulate quality-aware calibrated confidence: Score = Cls * sqrt(Obj * Quality)
+            comb_scores = cls_prob * torch.sqrt((obj_prob * quality_prob).clamp(min=1e-6))
+        else:
+            comb_scores = obj_prob * cls_prob  # [K, 12]
+
         max_scores, class_ids = comb_scores.max(dim=-1)
 
         # 6. Candidate Filter
@@ -235,9 +242,52 @@ def decode_ird_predictions_authoritative(
     )
 
     retained_boxes = all_boxes[keep]
-    retained_scores = all_scores[keep]
-    retained_classes = all_classes[keep]
-
     # 8. Post-NMS Safety Verification
     safety_mask = retained_scores >= conf_threshold
     return retained_boxes[safety_mask], retained_scores[safety_mask], retained_classes[safety_mask]
+
+
+def decode_detections(
+    head_output: Any,
+    conf_threshold: float = 0.25,
+    nms_threshold: float = 0.50,
+    max_det: int = 300,
+    img_size: Union[int, Tuple[int, int]] = 640,
+    obj_gate: Optional[float] = None,
+    decoder_version: str = "v2_smooth",
+) -> List[torch.Tensor]:
+    """
+    Authoritative batch decoding wrapper returning [M, 6] (x1, y1, x2, y2, conf, class_id)
+    per batch item.
+    """
+    from src.models.head.custom_head import HeadOutput
+
+    img_s = img_size[0] if isinstance(img_size, tuple) else img_size
+    batch_size = head_output.box_preds[0].shape[0]
+    results = []
+
+    for b_i in range(batch_size):
+        single_head = HeadOutput(
+            box_preds=[bp[b_i:b_i+1] for bp in head_output.box_preds],
+            obj_preds=[op[b_i:b_i+1] for op in head_output.obj_preds],
+            cls_preds=[cp[b_i:b_i+1] for cp in head_output.cls_preds],
+            strides=head_output.strides,
+            quality_preds=[qp[b_i:b_i+1] for qp in head_output.quality_preds] if getattr(head_output, "quality_preds", None) is not None else None,
+        )
+        boxes, scores, classes = decode_ird_predictions_authoritative(
+            single_head,
+            img_size=img_s,
+            conf_threshold=conf_threshold,
+            iou_threshold=nms_threshold,
+            max_det=max_det,
+            obj_gate=obj_gate,
+            decoder_version=decoder_version,
+        )
+        if boxes.numel() > 0:
+            det = torch.cat([boxes, scores.unsqueeze(1), classes.float().unsqueeze(1)], dim=1)
+        else:
+            det = torch.empty((0, 6), device=boxes.device)
+        results.append(det)
+
+    return results
+

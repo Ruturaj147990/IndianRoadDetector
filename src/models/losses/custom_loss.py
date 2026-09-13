@@ -494,9 +494,9 @@ class LossResult(dict):
     Structured result container for IndianRoadDetector training losses.
     
     Supports:
-      1. Attribute access: res.total_loss, res.box_loss, res.objectness_loss, res.classification_loss, res.number_of_positive_samples
+      1. Attribute access: res.total_loss, res.box_loss, res.objectness_loss, res.classification_loss, res.quality_loss, res.aux_loss
       2. Dict access: res['total_loss'], res['box_loss'], etc.
-      3. Tuple unpacking: total_loss, box_loss, obj_loss, cls_loss = res
+      3. Tuple unpacking: total_loss, box_loss, obj_loss, cls_loss = res (backwards-compatible 4-tuple)
     """
     def __init__(
         self,
@@ -505,6 +505,8 @@ class LossResult(dict):
         objectness_loss: torch.Tensor,
         classification_loss: torch.Tensor,
         number_of_positive_samples: int,
+        quality_loss: Optional[torch.Tensor] = None,
+        aux_loss: Optional[torch.Tensor] = None,
     ) -> None:
         super().__init__(
             total_loss=total_loss,
@@ -512,15 +514,116 @@ class LossResult(dict):
             objectness_loss=objectness_loss,
             classification_loss=classification_loss,
             number_of_positive_samples=number_of_positive_samples,
+            quality_loss=quality_loss,
+            aux_loss=aux_loss,
         )
         self.total_loss = total_loss
         self.box_loss = box_loss
         self.objectness_loss = objectness_loss
         self.classification_loss = classification_loss
         self.number_of_positive_samples = number_of_positive_samples
+        self.quality_loss = quality_loss
+        self.aux_loss = aux_loss
 
     def __iter__(self) -> Iterator[torch.Tensor]:
         return iter([self.total_loss, self.box_loss, self.objectness_loss, self.classification_loss])
+
+
+class AuxiliaryOneToOneMatcher:
+    """
+    Auxiliary One-to-One Matcher for IRD V1.
+    
+    Assigns strictly ONE anchor location per ground-truth object based on minimum
+    geometric distance and scale alignment. Used as an auxiliary training objective
+    to encourage sharp single-peak predictions and suppress duplicate box generation.
+    """
+    def __init__(self, strides: List[int] = [8, 16, 32]) -> None:
+        self.strides = strides
+
+    def match(
+        self,
+        targets: torch.Tensor,
+        grid_shapes: List[Tuple[int, int]],
+        device: torch.device,
+    ) -> List[Dict[str, torch.Tensor]]:
+        num_scales = len(self.strides)
+        if targets.numel() == 0:
+            return [{
+                "batch_idx": torch.empty(0, dtype=torch.long, device=device),
+                "grid_y": torch.empty(0, dtype=torch.long, device=device),
+                "grid_x": torch.empty(0, dtype=torch.long, device=device),
+                "gt_boxes": torch.empty((0, 4), dtype=torch.float32, device=device),
+                "gt_classes": torch.empty(0, dtype=torch.long, device=device),
+            } for _ in range(num_scales)]
+
+        matches_per_scale = [
+            {"batch_idx": [], "grid_y": [], "grid_x": [], "gt_boxes": [], "gt_classes": []}
+            for _ in range(num_scales)
+        ]
+
+        # For each ground truth object, find best matching scale and single cell
+        for k in range(targets.shape[0]):
+            b_idx = int(targets[k, 0].item())
+            cls_id = int(targets[k, 1].item())
+            k_cx = targets[k, 2].item()
+            k_cy = targets[k, 3].item()
+            k_w = targets[k, 4].item()
+            k_h = targets[k, 5].item()
+            k_area = max(1.0, k_w * k_h)
+
+            best_cost = float("inf")
+            best_scale = 0
+            best_i = 0
+            best_j = 0
+
+            for s_idx, stride in enumerate(self.strides):
+                h_g, w_g = grid_shapes[s_idx]
+                gx = k_cx / stride
+                gy = k_cy / stride
+                cj = int(math.floor(gx))
+                ci = int(math.floor(gy))
+
+                # Check 3x3 local neighborhood around center
+                for di in [-1, 0, 1]:
+                    for dj in [-1, 0, 1]:
+                        cand_i = ci + di
+                        cand_j = cj + dj
+                        if 0 <= cand_i < h_g and 0 <= cand_j < w_g:
+                            dist = math.sqrt((cand_j + 0.5 - gx) ** 2 + (cand_i + 0.5 - gy) ** 2)
+                            scale_cost = abs(math.log(max(1e-3, math.sqrt(k_area)) / (stride * 4.0)))
+                            cost = dist + 0.5 * scale_cost
+                            if cost < best_cost:
+                                best_cost = cost
+                                best_scale = s_idx
+                                best_i = cand_i
+                                best_j = cand_j
+
+            matches_per_scale[best_scale]["batch_idx"].append(b_idx)
+            matches_per_scale[best_scale]["grid_y"].append(best_i)
+            matches_per_scale[best_scale]["grid_x"].append(best_j)
+            matches_per_scale[best_scale]["gt_boxes"].append([k_cx, k_cy, k_w, k_h])
+            matches_per_scale[best_scale]["gt_classes"].append(cls_id)
+
+        final_matches = []
+        for s_idx in range(num_scales):
+            raw = matches_per_scale[s_idx]
+            if not raw["batch_idx"]:
+                final_matches.append({
+                    "batch_idx": torch.empty(0, dtype=torch.long, device=device),
+                    "grid_y": torch.empty(0, dtype=torch.long, device=device),
+                    "grid_x": torch.empty(0, dtype=torch.long, device=device),
+                    "gt_boxes": torch.empty((0, 4), dtype=torch.float32, device=device),
+                    "gt_classes": torch.empty(0, dtype=torch.long, device=device),
+                })
+            else:
+                final_matches.append({
+                    "batch_idx": torch.tensor(raw["batch_idx"], dtype=torch.long, device=device),
+                    "grid_y": torch.tensor(raw["grid_y"], dtype=torch.long, device=device),
+                    "grid_x": torch.tensor(raw["grid_x"], dtype=torch.long, device=device),
+                    "gt_boxes": torch.tensor(raw["gt_boxes"], dtype=torch.float32, device=device),
+                    "gt_classes": torch.tensor(raw["gt_classes"], dtype=torch.long, device=device),
+                })
+        return final_matches
 
 
 class IndianRoadLoss(nn.Module):
@@ -531,12 +634,16 @@ class IndianRoadLoss(nn.Module):
       1. Bounding-box loss: CIoU localization loss computed on positive match locations.
       2. Objectness loss: Focal binary cross-entropy across all prediction locations.
       3. Classification loss: Multi-label focal BCE computed on positive locations.
+      4. Localization quality loss: BCE on continuous IoU quality targets.
+      5. Auxiliary One-to-One loss: Training-only supervision for duplicate suppression.
       
     Args:
         num_classes: Number of object categories (default: 12).
         box_weight: Weight multiplier for bounding-box CIoU loss (default: 5.0).
         obj_weight: Weight multiplier for objectness loss (default: 1.0).
         cls_weight: Weight multiplier for classification loss (default: 1.0).
+        qual_weight: Weight multiplier for localization quality loss (default: 0.5).
+        aux_weight: Weight multiplier for auxiliary one-to-one loss (default: 0.5).
         strides: Model strides for [N3, N4, N5] (default: (8, 16, 32)).
         focal_gamma: Focusing parameter for focal loss (default: 2.0).
         focal_alpha: Class balance factor for positive samples (default: 0.25).
@@ -544,6 +651,8 @@ class IndianRoadLoss(nn.Module):
         quality_aware_obj: Whether to use IoU soft objectness targets.
         matcher_version: 'v1_spatial' or 'topk_adaptive_v2'.
         class_balanced_loss: Whether to apply inverse-frequency focal weighting.
+        small_obj_floor: Guaranteed Small-Object Presence Supervision.
+        use_aux_one2one: Whether to enable training-only auxiliary 1-to-1 objective.
     """
     def __init__(
         self,
@@ -551,20 +660,25 @@ class IndianRoadLoss(nn.Module):
         box_weight: float = 5.0,
         obj_weight: float = 1.0,
         cls_weight: float = 1.0,
+        qual_weight: float = 0.5,
+        aux_weight: float = 0.5,
         strides: Tuple[int, int, int] = (8, 16, 32),
         focal_gamma: float = 2.0,
         focal_alpha: float = 0.25,
         decoder_version: str = "v2_smooth",
         quality_aware_obj: bool = True,
-        matcher_version: str = "v1_spatial",
-        class_balanced_loss: bool = False,
+        matcher_version: str = "topk_adaptive_v2",
+        class_balanced_loss: bool = True,
         small_obj_floor: bool = False,
+        use_aux_one2one: bool = False,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.box_weight = box_weight
         self.obj_weight = obj_weight
         self.cls_weight = cls_weight
+        self.qual_weight = qual_weight
+        self.aux_weight = aux_weight
         self.strides = list(strides)
         self.focal_gamma = focal_gamma
         self.focal_alpha = focal_alpha
@@ -573,11 +687,14 @@ class IndianRoadLoss(nn.Module):
         self.matcher_version = matcher_version
         self.class_balanced_loss = class_balanced_loss
         self.small_obj_floor = small_obj_floor
+        self.use_aux_one2one = use_aux_one2one
 
         if matcher_version == "topk_adaptive_v2":
             self.matcher = ScaleAdaptiveTopKMatcher(strides=self.strides, topk=4)
         else:
             self.matcher = MultiScaleSpatialMatcher(strides=self.strides)
+
+        self.aux_matcher = AuxiliaryOneToOneMatcher(strides=self.strides)
 
     def forward(
         self,
@@ -597,10 +714,14 @@ class IndianRoadLoss(nn.Module):
             LossResult with total_loss, box_loss, objectness_loss, classification_loss, and num_positives.
         """
         # Unpack predictions
+        quality_preds = None
         if isinstance(predictions, HeadOutput):
             box_preds = predictions.box_preds
             obj_preds = predictions.obj_preds
             cls_preds = predictions.cls_preds
+            quality_preds = predictions.quality_preds
+        elif len(predictions) == 4:
+            box_preds, obj_preds, cls_preds, quality_preds = predictions
         else:
             box_preds, obj_preds, cls_preds = predictions
 
@@ -633,6 +754,7 @@ class IndianRoadLoss(nn.Module):
         total_box_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
         total_cls_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
         total_obj_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
+        total_qual_loss = None
 
         # Compute loss per scale
         for s_idx, stride in enumerate(self.strides):
@@ -721,7 +843,17 @@ class IndianRoadLoss(nn.Module):
 
                 total_cls_loss = total_cls_loss + scale_cls_loss
 
-            # 3. Objectness loss (Focal BCE across all grid cells on this scale)
+                # 3. Localization Quality Branch Loss (continuous IoU prediction)
+                if quality_preds is not None and quality_preds[s_idx] is not None:
+                    pred_q_pos = quality_preds[s_idx][b_idx, 0, g_y, g_x]
+                    target_q = ciou.detach().clamp(min=0.0, max=1.0)
+                    qual_bce = F.binary_cross_entropy_with_logits(pred_q_pos, target_q, reduction="sum")
+                    if total_qual_loss is None:
+                        total_qual_loss = qual_bce
+                    else:
+                        total_qual_loss = total_qual_loss + qual_bce
+
+            # 4. Objectness loss (Focal BCE across all grid cells on this scale)
             obj_bce = F.binary_cross_entropy_with_logits(pred_o, target_obj, reduction="none")
             p_obj = torch.sigmoid(pred_o)
             p_t_obj = p_obj * target_obj + (1.0 - p_obj) * (1.0 - target_obj)
@@ -729,6 +861,43 @@ class IndianRoadLoss(nn.Module):
             obj_focal = alpha_factor * (1.0 - p_t_obj).clamp(min=0.0).pow(self.focal_gamma)
             scale_obj_loss = (obj_focal * obj_bce).sum()
             total_obj_loss = total_obj_loss + scale_obj_loss
+
+        # Auxiliary One-to-One Training Objective (Training-only peak sharpening)
+        total_aux_loss = None
+        total_aux_positives = 0
+        if self.use_aux_one2one and self.training and targets_tensor.numel() > 0:
+            aux_matches = self.aux_matcher.match(targets_tensor, grid_shapes, device=device)
+            aux_box_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
+            aux_cls_loss = torch.zeros(1, device=device, dtype=dtype).squeeze()
+            for s_idx, stride in enumerate(self.strides):
+                aux_m = aux_matches[s_idx]
+                n_aux = len(aux_m["batch_idx"])
+                if n_aux > 0:
+                    a_b = aux_m["batch_idx"]
+                    a_y = aux_m["grid_y"]
+                    a_x = aux_m["grid_x"]
+                    a_gt_b = aux_m["gt_boxes"]
+                    a_gt_c = aux_m["gt_classes"]
+                    total_aux_positives += n_aux
+
+                    raw_b = box_preds[s_idx][a_b, :, a_y, a_x]
+                    dec_b = decode_boxes_smooth(raw_b, a_x, a_y, stride=stride, version=self.decoder_version)
+                    dec_gt = torch.stack([
+                        a_gt_b[:, 0] - a_gt_b[:, 2] / 2.0,
+                        a_gt_b[:, 1] - a_gt_b[:, 3] / 2.0,
+                        a_gt_b[:, 0] + a_gt_b[:, 2] / 2.0,
+                        a_gt_b[:, 1] + a_gt_b[:, 3] / 2.0,
+                    ], dim=-1)
+                    aux_ciou = bbox_ciou(dec_b, dec_gt)
+                    aux_box_loss = aux_box_loss + (1.0 - aux_ciou).sum()
+
+                    pred_cls_aux = cls_preds[s_idx][a_b, :, a_y, a_x]
+                    one_hot_aux = F.one_hot(a_gt_c, num_classes=self.num_classes).to(dtype=dtype)
+                    cls_bce_aux = F.binary_cross_entropy_with_logits(pred_cls_aux, one_hot_aux, reduction="sum")
+                    aux_cls_loss = aux_cls_loss + cls_bce_aux
+
+            if total_aux_positives > 0:
+                total_aux_loss = (self.box_weight * aux_box_loss + self.cls_weight * aux_cls_loss) / total_aux_positives
 
         # Normalize losses
         final_box_loss = total_box_loss / norm_factor
@@ -742,12 +911,24 @@ class IndianRoadLoss(nn.Module):
             self.cls_weight * final_cls_loss
         )
 
+        final_qual_loss = None
+        if total_qual_loss is not None:
+            final_qual_loss = total_qual_loss / norm_factor
+            total_loss = total_loss + self.qual_weight * final_qual_loss
+
+        final_aux_loss = None
+        if total_aux_loss is not None:
+            final_aux_loss = total_aux_loss
+            total_loss = total_loss + self.aux_weight * final_aux_loss
+
         return LossResult(
             total_loss=total_loss,
             box_loss=final_box_loss,
             objectness_loss=final_obj_loss,
             classification_loss=final_cls_loss,
             number_of_positive_samples=total_positives,
+            quality_loss=final_qual_loss,
+            aux_loss=final_aux_loss,
         )
 
 

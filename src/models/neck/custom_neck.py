@@ -329,6 +329,112 @@ class NeckDownsampler(nn.Module):
         return self.fuse(torch.cat([feat_conv, feat_pool], dim=1))
 
 
+class AnisotropicTrafficDisentangler(nn.Module):
+    """
+    Anisotropic Traffic Disentangler (ATD) for dense multi-object road environments.
+    
+    Specifically engineered for Indian road scenes to solve two major structural failure modes:
+    1. Vertical elevation coupling: Resolves riders mounted on top of motorcycles and scooters
+       via vertical strip depthwise convolutions (kernel 5x1) without lateral bleed.
+    2. Lateral vehicle crowding: Resolves side-by-side queues of motorcycles and cars in narrow lanes
+       via horizontal strip depthwise convolutions (kernel 1x5) without vertical bleed.
+    3. Cross-Directional Gating:
+       Computes reciprocal gating masks where horizontal features gate the vertical stream
+       and vertical features gate the horizontal stream:
+         F_fused = (V * G_h) + (H * G_v)
+         X_out = X + gamma * Proj(F_fused)
+       where gamma is a learnable parameter initialized to 0.1.
+    """
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.channels = channels
+        
+        # Asymmetric strip depthwise convolutions
+        self.v_strip = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=(5, 1), padding=(2, 0), groups=channels, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.SiLU(inplace=True),
+        )
+        self.h_strip = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=(1, 5), padding=(0, 2), groups=channels, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.SiLU(inplace=True),
+        )
+        
+        # Lightweight cross-gating projections
+        mid_dim = max(32, channels // 2)
+        self.gate_v = nn.Sequential(
+            nn.Conv2d(channels, mid_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(mid_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(mid_dim, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.Sigmoid(),
+        )
+        self.gate_h = nn.Sequential(
+            nn.Conv2d(channels, mid_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(mid_dim),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(mid_dim, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.Sigmoid(),
+        )
+        
+        # Feature projection and residual scale
+        self.proj = ConvBNAct(channels, channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.ones(1, channels, 1, 1) * 0.1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        v = self.v_strip(x)
+        h = self.h_strip(x)
+        g_v = self.gate_v(v)
+        g_h = self.gate_h(h)
+        fused = (v * g_h) + (h * g_v)
+        return x + self.gamma * self.proj(fused)
+
+
+class SelectiveSpatialDetailPathway(nn.Module):
+    """
+    Selective Spatial Detail Pathway (SSDP) for Small-Object Representation.
+    
+    Extracts high-frequency spatial edge cues from high-resolution P2 (stride 4, 160x160),
+    downsamples them using an anti-aliased depthwise compressor, and selectively injects
+    salient high-resolution details directly into N3 (stride 8, 80x80) via a spatial gate.
+    
+    Prevents tiny and distant objects (pedestrians, traffic signs, distant motorcycles)
+    from being erased by deep strided convolutions without the compute explosion of a full P2 head.
+    
+    Args:
+        in_channels: Input channels from P2 (default: 64).
+        out_channels: Unified neck channels for N3 (default: 128).
+    """
+    def __init__(self, in_channels: int = 64, out_channels: int = 128) -> None:
+        super().__init__()
+        # 1. High-pass spatial edge extractor
+        self.edge_filter = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
+        
+        # 2. Anti-aliased spatial compressor (160x160 -> 80x80)
+        self.compressor = nn.Sequential(
+            ConvBNAct(in_channels, in_channels, kernel_size=3, stride=2, groups=in_channels),
+            ConvBNAct(in_channels, out_channels, kernel_size=1, stride=1),
+        )
+        
+        # 3. Spatial salience gate: identifies coordinates with concentrated high-frequency traffic cues
+        self.salience_gate = nn.Sequential(
+            nn.Conv2d(out_channels, 1, kernel_size=3, padding=1),
+            nn.Sigmoid(),
+        )
+        
+        # 4. Learnable residual injection scale
+        self.gamma = nn.Parameter(torch.ones(1, out_channels, 1, 1) * 0.1)
+
+    def forward(self, p2: torch.Tensor) -> torch.Tensor:
+        high_pass = p2 - self.edge_filter(p2)
+        compressed = self.compressor(high_pass)
+        salience = self.salience_gate(compressed)
+        return self.gamma * (compressed * salience)
+
+
 class IndianRoadNeck(nn.Module):
     """
     Custom Multi-Scale Feature-Fusion Neck for Indian Road Object Detection.
@@ -348,22 +454,29 @@ class IndianRoadNeck(nn.Module):
       2. Top-Down Semantic Flow: P5_context -> Up -> ASF(P4, Up(P5)) -> Up -> ASF(P3, Up(P4)).
       3. High-Res Preservation: HighResDetailEnhancer injects crisp edge gradients into N3.
       4. Bottom-Up Localization Flow: N3 -> Down -> ASF(P4_td, Down(N3)) -> Down -> ASF(P5_td, Down(N4)).
+      5. Anisotropic Traffic Disentangler (ATD): Cross-gates orthogonal horizontal and vertical features on N3 and N4.
       
     Args:
         in_channels: Tuple of input channel dimensions (default: (128, 256, 512)).
         neck_channels: Unified channel dimension for neck outputs (default: 128).
         num_refine_blocks: Number of RoadFusionBlocks per stage (default: 1).
+        use_atd: Whether to enable Anisotropic Traffic Disentangler on N3 and N4 (default: False).
     """
     def __init__(
         self,
         in_channels: Tuple[int, int, int] = (128, 256, 512),
         neck_channels: int = 128,
         num_refine_blocks: int = 1,
+        use_atd: bool = False,
+        use_ssdp: bool = False,
+        p2_channels: int = 64,
     ) -> None:
         super().__init__()
         c3_in, c4_in, c5_in = in_channels
         self.in_channels = in_channels
         self.neck_channels = neck_channels
+        self.use_atd = use_atd
+        self.use_ssdp = use_ssdp
         self.out_channels: List[int] = [neck_channels, neck_channels, neck_channels]
         self.out_strides: List[int] = [8, 16, 32]
         
@@ -389,6 +502,10 @@ class IndianRoadNeck(nn.Module):
         # 3. High-Resolution Detail Preservation for N3
         self.n3_enhancer = HighResDetailEnhancer(neck_channels)
         
+        # 3b. Selective Spatial Detail Pathway (SSDP) from high-res P2 (stride 4)
+        if self.use_ssdp:
+            self.ssdp = SelectiveSpatialDetailPathway(in_channels=p2_channels, out_channels=neck_channels)
+        
         # 4. Bottom-Up Localization Pathway
         self.down_n3 = NeckDownsampler(neck_channels)
         self.bu_asf_4 = AdaptiveScaleFusion(neck_channels)
@@ -402,6 +519,11 @@ class IndianRoadNeck(nn.Module):
             RoadFusionBlock(neck_channels) for _ in range(num_refine_blocks)
         ])
         self.n5_rca = RoadContextAggregator(neck_channels)
+        
+        # 5. Anisotropic Traffic Disentangler for N3 (stride 8) and N4 (stride 16)
+        if self.use_atd:
+            self.n3_atd = AnisotropicTrafficDisentangler(neck_channels)
+            self.n4_atd = AnisotropicTrafficDisentangler(neck_channels)
         
         # Weight initialization
         self._init_weights()
@@ -420,6 +542,7 @@ class IndianRoadNeck(nn.Module):
         p3: torch.Tensor,
         p4: torch.Tensor,
         p5: torch.Tensor,
+        p2: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass through the neck.
@@ -428,6 +551,7 @@ class IndianRoadNeck(nn.Module):
             p3: Feature map at 1/8 scale [B, C3, H/8, W/8].
             p4: Feature map at 1/16 scale [B, C4, H/16, W/16].
             p5: Feature map at 1/32 scale [B, C5, H/32, W/32].
+            p2: Optional feature map at 1/4 scale [B, C2, H/4, W/4] for SSDP.
             
         Returns:
             Tuple of (N3, N4, N5):
@@ -451,6 +575,10 @@ class IndianRoadNeck(nn.Module):
         # Step 3: High-resolution detail enhancement for N3
         n3 = self.n3_enhancer(td3, lat3)                              # [B, C, 80, 80]
         
+        # Step 3b: Selective high-resolution detail injection from P2
+        if self.use_ssdp and p2 is not None:
+            n3 = n3 + self.ssdp(p2)
+        
         # Step 4: Bottom-up localization enrichment
         down_n3 = self.down_n3(n3)                                    # [B, C, 40, 40]
         n4 = self.bu_refine_4(self.bu_asf_4(td4, down_n3))           # [B, C, 40, 40]
@@ -459,6 +587,11 @@ class IndianRoadNeck(nn.Module):
         n5_pre = self.bu_refine_5(self.bu_asf_5(td5, down_n4))       # [B, C, 20, 20]
         n5 = self.n5_rca(n5_pre)                                      # [B, C, 20, 20]
         
+        # Step 5: Anisotropic traffic disentanglement (N3 and N4)
+        if self.use_atd:
+            n3 = self.n3_atd(n3)
+            n4 = self.n4_atd(n4)
+        
         return n3, n4, n5
 
 
@@ -466,12 +599,16 @@ def build_neck(
     in_channels: Tuple[int, int, int] = (128, 256, 512),
     neck_channels: int = 128,
     num_refine_blocks: int = 1,
+    use_atd: bool = False,
+    use_ssdp: bool = False,
 ) -> IndianRoadNeck:
     """Helper factory function to construct an IndianRoadNeck instance."""
     return IndianRoadNeck(
         in_channels=in_channels,
         neck_channels=neck_channels,
         num_refine_blocks=num_refine_blocks,
+        use_atd=use_atd,
+        use_ssdp=use_ssdp,
     )
 
 
