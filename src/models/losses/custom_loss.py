@@ -812,18 +812,18 @@ class IndianRoadLoss(nn.Module):
                         # receive a guaranteed target floor of 0.80 instead of being suppressed
                         # by weak initial CIoU targets (~0.55) against 8400 negative cells.
                         obj_scale_pos = torch.sqrt(gt_w * gt_h + 1e-6)
-                        floor_val = torch.tensor(0.80, dtype=dtype, device=device)
+                        floor_val = torch.tensor(0.80, dtype=target_obj.dtype, device=device)
                         target_val = torch.where(obj_scale_pos < 96.0, torch.maximum(base_target, floor_val), base_target)
-                        target_obj[b_idx, 0, g_y, g_x] = target_val.to(dtype=dtype)
+                        target_obj[b_idx, 0, g_y, g_x] = target_val.to(dtype=target_obj.dtype)
                     else:
-                        target_obj[b_idx, 0, g_y, g_x] = base_target.to(dtype=dtype)
+                        target_obj[b_idx, 0, g_y, g_x] = base_target.to(dtype=target_obj.dtype)
                 else:
-                    target_obj[b_idx, 0, g_y, g_x] = torch.tensor(1.0, dtype=dtype, device=device)
+                    target_obj[b_idx, 0, g_y, g_x] = torch.tensor(1.0, dtype=target_obj.dtype, device=device)
 
                 # 2. Classification loss (Multi-label Focal BCE)
                 # Extract class logits at positive locations: [N_pos, num_classes]
                 pred_cls_pos = pred_c[b_idx, :, g_y, g_x]
-                one_hot_cls = F.one_hot(gt_classes, num_classes=self.num_classes).to(dtype=dtype)
+                one_hot_cls = F.one_hot(gt_classes, num_classes=self.num_classes).to(dtype=pred_cls_pos.dtype)
 
                 cls_bce = F.binary_cross_entropy_with_logits(pred_cls_pos, one_hot_cls, reduction="none")
                 p_cls = torch.sigmoid(pred_cls_pos)
@@ -833,7 +833,7 @@ class IndianRoadLoss(nn.Module):
                 if self.class_balanced_loss:
                     cls_weights_tensor = torch.tensor(
                         [2.2, 1.8, 1.0, 2.4, 2.5, 1.8, 2.4, 2.3, 2.5, 2.3, 2.5, 2.4],
-                        device=device, dtype=dtype
+                        device=device, dtype=pred_cls_pos.dtype
                     )
                     cw = cls_weights_tensor[gt_classes].unsqueeze(1)
                     cls_weight_mod = 1.0 + (cw - 1.0) * one_hot_cls
@@ -846,7 +846,7 @@ class IndianRoadLoss(nn.Module):
                 # 3. Localization Quality Branch Loss (continuous IoU prediction)
                 if quality_preds is not None and quality_preds[s_idx] is not None:
                     pred_q_pos = quality_preds[s_idx][b_idx, 0, g_y, g_x]
-                    target_q = ciou.detach().clamp(min=0.0, max=1.0)
+                    target_q = ciou.detach().clamp(min=0.0, max=1.0).to(dtype=pred_q_pos.dtype)
                     qual_bce = F.binary_cross_entropy_with_logits(pred_q_pos, target_q, reduction="sum")
                     if total_qual_loss is None:
                         total_qual_loss = qual_bce
@@ -887,12 +887,12 @@ class IndianRoadLoss(nn.Module):
                         a_gt_b[:, 1] - a_gt_b[:, 3] / 2.0,
                         a_gt_b[:, 0] + a_gt_b[:, 2] / 2.0,
                         a_gt_b[:, 1] + a_gt_b[:, 3] / 2.0,
-                    ], dim=-1)
+                    ], dim=-1).to(dtype=dec_b.dtype)
                     aux_ciou = bbox_ciou(dec_b, dec_gt)
                     aux_box_loss = aux_box_loss + (1.0 - aux_ciou).sum()
 
                     pred_cls_aux = cls_preds[s_idx][a_b, :, a_y, a_x]
-                    one_hot_aux = F.one_hot(a_gt_c, num_classes=self.num_classes).to(dtype=dtype)
+                    one_hot_aux = F.one_hot(a_gt_c, num_classes=self.num_classes).to(dtype=pred_cls_aux.dtype)
                     cls_bce_aux = F.binary_cross_entropy_with_logits(pred_cls_aux, one_hot_aux, reduction="sum")
                     aux_cls_loss = aux_cls_loss + cls_bce_aux
 

@@ -1,0 +1,20 @@
+{
+  "video_source": "experiments\\evaluation_results\\video_demo\\source_dense_traffic_clip_03407111.mp4",
+  "output_path": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\experiments\\evaluation_results\\video_demo\\ird_annotated_dense_traffic_clip_03407111.mp4",
+  "frames_processed": 180,
+  "resolution": "1920x994",
+  "input_fps": 15.0,
+  "model_only_latency_ms": 47.91,
+  "model_only_fps": 20.87,
+  "end_to_end_latency_ms": 69.85,
+  "end_to_end_fps": 14.32,
+  "timing_breakdown_ms": {
+    "preprocess_ms": 2.55,
+    "gpu_forward_ms": 38.29,
+    "decode_nms_ms": 9.62,
+    "render_encode_ms": 16.55,
+    "total_per_frame_ms": 69.85
+  },
+  "device": "AMD GPU / ROCm: AMD Radeon RX 7700 XT",
+  "total_elapsed_seconds": 12.58
+}

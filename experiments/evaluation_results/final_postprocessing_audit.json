@@ -1,0 +1,274 @@
+{
+  "metadata": {
+    "model": "IRD V1.5 (IndianRoadDetection)",
+    "checkpoint": "experiments/custom_model/final_training_50ep/ird_best.pt",
+    "total_val_images": 1719,
+    "image_size": 640,
+    "device": "cuda",
+    "timestamp": "2026-09-14 13:17:01"
+  },
+  "score_distribution": {
+    "percentiles": {
+      "P10": 0.013694518245756626,
+      "P25": 0.023066146299242973,
+      "P50": 0.03743757680058479,
+      "P75": 0.05928559601306915,
+      "P90": 0.08803906291723251,
+      "P95": 0.10845494270324707,
+      "P99": 0.8131743669509888,
+      "P99.5": 0.886875331401825,
+      "P99.9": 0.9296144843101501
+    },
+    "counts_per_image_above_threshold": {
+      "above_0.001": {
+        "threshold": 0.001,
+        "avg_per_image": 2113.3781268179173,
+        "median_per_image": 2110.0,
+        "max_per_image": 2378,
+        "min_per_image": 1793,
+        "total_count": 3632897
+      },
+      "above_0.005": {
+        "threshold": 0.005,
+        "avg_per_image": 2060.7713787085513,
+        "median_per_image": 2062.0,
+        "max_per_image": 2348,
+        "min_per_image": 1760,
+        "total_count": 3542466
+      },
+      "above_0.01": {
+        "threshold": 0.01,
+        "avg_per_image": 1991.673647469459,
+        "median_per_image": 1992.0,
+        "max_per_image": 2289,
+        "min_per_image": 1687,
+        "total_count": 3423687
+      },
+      "above_0.02": {
+        "threshold": 0.02,
+        "avg_per_image": 1693.7056428155904,
+        "median_per_image": 1696.0,
+        "max_per_image": 2012,
+        "min_per_image": 1371,
+        "total_count": 2911480
+      },
+      "above_0.05": {
+        "threshold": 0.05,
+        "avg_per_image": 691.9115764979639,
+        "median_per_image": 578.0,
+        "max_per_image": 1432,
+        "min_per_image": 180,
+        "total_count": 1189396
+      },
+      "above_0.1": {
+        "threshold": 0.1,
+        "avg_per_image": 120.04013961605585,
+        "median_per_image": 96.0,
+        "max_per_image": 697,
+        "min_per_image": 13,
+        "total_count": 206349
+      },
+      "above_0.25": {
+        "threshold": 0.25,
+        "avg_per_image": 8.560791157649797,
+        "median_per_image": 8.0,
+        "max_per_image": 34,
+        "min_per_image": 0,
+        "total_count": 14716
+      },
+      "above_0.5": {
+        "threshold": 0.5,
+        "avg_per_image": 2.8679464805119257,
+        "median_per_image": 2.0,
+        "max_per_image": 13,
+        "min_per_image": 0,
+        "total_count": 4930
+      }
+    }
+  },
+  "max_det_sweep": {
+    "max_det_100": {
+      "max_det": 100,
+      "total_predictions": 171900,
+      "avg_predictions_per_img": 100.0,
+      "max_predictions_per_img": 100,
+      "min_predictions_per_img": 100,
+      "precision": 0.0296,
+      "recall": 0.4811,
+      "mAP50": 0.2908,
+      "mAP50_95": 0.1906,
+      "per_class_ap50": {
+        "person": 0.246,
+        "rider": 0.5034,
+        "car": 0.8427,
+        "truck": 0.1744,
+        "bus": 0.2756,
+        "motorcycle": 0.5504,
+        "bicycle": 0.3787,
+        "autorickshaw": 0.4498,
+        "animal": 0.0009,
+        "vehicle fallback": 0.052,
+        "traffic light": 0.0,
+        "traffic sign": 0.0162
+      },
+      "eval_time_sec": 1.28
+    },
+    "max_det_300": {
+      "max_det": 300,
+      "total_predictions": 515700,
+      "avg_predictions_per_img": 300.0,
+      "max_predictions_per_img": 300,
+      "min_predictions_per_img": 300,
+      "precision": 0.0124,
+      "recall": 0.5133,
+      "mAP50": 0.2911,
+      "mAP50_95": 0.1907,
+      "per_class_ap50": {
+        "person": 0.2463,
+        "rider": 0.5034,
+        "car": 0.843,
+        "truck": 0.1749,
+        "bus": 0.2757,
+        "motorcycle": 0.5507,
+        "bicycle": 0.3794,
+        "autorickshaw": 0.4501,
+        "animal": 0.0009,
+        "vehicle fallback": 0.0524,
+        "traffic light": 0.0002,
+        "traffic sign": 0.0163
+      },
+      "eval_time_sec": 2.74
+    },
+    "max_det_500": {
+      "max_det": 500,
+      "total_predictions": 859500,
+      "avg_predictions_per_img": 500.0,
+      "max_predictions_per_img": 500,
+      "min_predictions_per_img": 500,
+      "precision": 0.0085,
+      "recall": 0.5292,
+      "mAP50": 0.2912,
+      "mAP50_95": 0.1907,
+      "per_class_ap50": {
+        "person": 0.2464,
+        "rider": 0.5039,
+        "car": 0.843,
+        "truck": 0.175,
+        "bus": 0.2758,
+        "motorcycle": 0.5507,
+        "bicycle": 0.3795,
+        "autorickshaw": 0.45,
+        "animal": 0.0009,
+        "vehicle fallback": 0.0523,
+        "traffic light": 0.0001,
+        "traffic sign": 0.0163
+      },
+      "eval_time_sec": 4.89
+    },
+    "max_det_1000": {
+      "max_det": 1000,
+      "total_predictions": 1719000,
+      "avg_predictions_per_img": 1000.0,
+      "max_predictions_per_img": 1000,
+      "min_predictions_per_img": 1000,
+      "precision": 0.0049,
+      "recall": 0.5506,
+      "mAP50": 0.2913,
+      "mAP50_95": 0.1907,
+      "per_class_ap50": {
+        "person": 0.2465,
+        "rider": 0.5039,
+        "car": 0.8434,
+        "truck": 0.1751,
+        "bus": 0.2759,
+        "motorcycle": 0.5509,
+        "bicycle": 0.3796,
+        "autorickshaw": 0.45,
+        "animal": 0.0009,
+        "vehicle fallback": 0.0524,
+        "traffic light": 0.0001,
+        "traffic sign": 0.0164
+      },
+      "eval_time_sec": 9.88
+    },
+    "max_det_2000": {
+      "max_det": 2000,
+      "total_predictions": 3431367,
+      "avg_predictions_per_img": 1996.1413612565445,
+      "max_predictions_per_img": 2000,
+      "min_predictions_per_img": 1793,
+      "precision": 0.0021,
+      "recall": 0.5548,
+      "mAP50": 0.2913,
+      "mAP50_95": 0.1907,
+      "per_class_ap50": {
+        "person": 0.2465,
+        "rider": 0.5039,
+        "car": 0.8434,
+        "truck": 0.1751,
+        "bus": 0.2759,
+        "motorcycle": 0.5509,
+        "bicycle": 0.3796,
+        "autorickshaw": 0.4501,
+        "animal": 0.0009,
+        "vehicle fallback": 0.0525,
+        "traffic light": 0.0001,
+        "traffic sign": 0.0164
+      },
+      "eval_time_sec": 17.73
+    },
+    "max_det_5000": {
+      "max_det": 5000,
+      "total_predictions": 3632897,
+      "avg_predictions_per_img": 2113.3781268179173,
+      "max_predictions_per_img": 2378,
+      "min_predictions_per_img": 1793,
+      "precision": 0.0019,
+      "recall": 0.5548,
+      "mAP50": 0.2913,
+      "mAP50_95": 0.1907,
+      "per_class_ap50": {
+        "person": 0.2465,
+        "rider": 0.5039,
+        "car": 0.8434,
+        "truck": 0.1751,
+        "bus": 0.2759,
+        "motorcycle": 0.5509,
+        "bicycle": 0.3796,
+        "autorickshaw": 0.4501,
+        "animal": 0.0009,
+        "vehicle fallback": 0.0525,
+        "traffic light": 0.0001,
+        "traffic sign": 0.0164
+      },
+      "eval_time_sec": 19.58
+    }
+  },
+  "production_configuration": {
+    "conf_threshold": 0.25,
+    "iou_threshold": 0.4,
+    "max_det": 300,
+    "total_predictions": 9306,
+    "avg_predictions_per_img": 5.4136125654450264,
+    "max_predictions_per_img": 24,
+    "min_predictions_per_img": 0,
+    "precision": 0.3293,
+    "recall": 0.3208,
+    "mAP50": 0.2647,
+    "mAP50_95": 0.1788,
+    "per_class_ap50": {
+      "person": 0.2311,
+      "rider": 0.4616,
+      "car": 0.7899,
+      "truck": 0.1469,
+      "bus": 0.257,
+      "motorcycle": 0.5,
+      "bicycle": 0.3293,
+      "autorickshaw": 0.4199,
+      "animal": 0.0,
+      "vehicle fallback": 0.029,
+      "traffic light": 0.0,
+      "traffic sign": 0.0114
+    }
+  }
+}

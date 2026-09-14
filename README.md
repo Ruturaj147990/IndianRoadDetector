@@ -123,6 +123,41 @@ python scripts/train_custom.py \
 
 ---
 
-## 6. Architecture Status
+## 6. IRD V2 Task-Aligned System (DEVELOPMENT / NOT BENCHMARKED)
 
-**STATUS: ARCHITECTURE READY FOR FULL TRAINING**
+> [!NOTE]
+> **Status: Development / Not Benchmarked.**  
+> IRD V2 is an architectural and training system redesign developed to eliminate the 506k+ false positive problem and crowded-scene recall drop identified during the IRD V1.5 deep error analysis.
+
+### IRD V2 Core Features:
+- **Task-Aligned Assignor (TAL)**: Joint classification-localization metric $t = s^{0.5} \times \text{IoU}^{6.0}$ with in-box spatial gating and deterministic multi-GT conflict resolution ([`src/models/losses/task_aligned_assignor.py`](src/models/losses/task_aligned_assignor.py)).
+- **Varifocal Classification Loss (VFL)**: Continuous IoU-aware focal loss for steep negative background suppression and calibrated quality targets ([`src/models/losses/task_aligned_loss.py`](src/models/losses/task_aligned_loss.py)).
+- **Explicit Zero Background Supervision**: Prevents background quality and objectness drift by explicitly supervising negative cells with $0.0$ targets.
+- **Calibrated Task-Aligned Inference Decoder**: Replaces square-root confidence inflation with linear score formulation $\text{Score} = \text{Cls}^{1.0} \times \text{Quality}^{1.0}$ and class-aware NMS at $\text{IoU} = 0.40$ ([`src/models/task_aligned_decoder.py`](src/models/task_aligned_decoder.py)).
+- **Complete Design Specification**: [`experiments/custom_model/IRD_V2_DESIGN.md`](experiments/custom_model/IRD_V2_DESIGN.md).
+
+### Verification & Hardware Safety:
+- **Unit Tests**: 18/18 tests passed in [`tests/test_ird_v2_task_aligned.py`](tests/test_ird_v2_task_aligned.py).
+- **Static Verification**: Exact parameter match (**4,441,989**) and 100% state-dict compatibility verified in [`scripts/verify_ird_v2.py`](scripts/verify_ird_v2.py).
+- **Zero Local Workstation Training**: Local workstation is strictly used for code development and static verification; all V1.5 checkpoints remain untouched.
+
+### Cloud GPU Training Command (External Cluster):
+```bash
+python train.py \
+    --version v2 \
+    --loss-type task_aligned \
+    --data-dir data/indian_road_yolo \
+    --output-dir experiments/custom_model/v2_training \
+    --epochs 50 \
+    --batch-size 16 \
+    --lr 1e-3 \
+    --device cuda \
+    --amp
+```
+
+---
+
+## 7. Architecture Status
+
+**STATUS: V1.5 AUTHORITATIVE BASELINE PRESERVED | V2 SYSTEM INTEGRATED & VERIFIED (NOT BENCHMARKED)**
+

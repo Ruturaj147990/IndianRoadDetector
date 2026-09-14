@@ -26,7 +26,7 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from PIL import Image
@@ -113,7 +113,9 @@ def decode_ird_predictions(
     obj_gate: Optional[float] = None,
     decoder_version: str = "v2_smooth",
     device: torch.device = torch.device("cpu"),
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_diagnostics: bool = False,
+    score_mode: str = "sqrt_quality",
+) -> Union[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]]:
     """
     Authoritative decoding pipeline for IRD multi-scale predictions.
     Delegates directly to src.models.box_coder.decode_ird_predictions_authoritative.
@@ -127,6 +129,8 @@ def decode_ird_predictions(
         obj_gate=obj_gate,
         decoder_version=decoder_version,
         device=device,
+        return_diagnostics=return_diagnostics,
+        score_mode=score_mode,
     )
 
 
@@ -211,47 +215,80 @@ def evaluate_class_predictions(
             "ap_per_iou": {f"iou_{t:.2f}": 0.0 for t in iou_thresholds},
         }
 
-    # Group ground truths by image ID
-    gt_by_img: Dict[int, List[torch.Tensor]] = defaultdict(list)
+    # Group ground truths by image ID and pre-stack once
+    gt_by_img_raw: Dict[int, List[List[float]]] = defaultdict(list)
     for gt in gts:
-        gt_by_img[gt["img_id"]].append(torch.tensor(gt["box"], dtype=torch.float32))
+        gt_by_img_raw[gt["img_id"]].append(gt["box"])
+    gt_tensors: Dict[int, torch.Tensor] = {
+        img_id: torch.tensor(boxes, dtype=torch.float32) for img_id, boxes in gt_by_img_raw.items()
+    }
 
-    # Sort predictions by confidence score descending
-    sorted_preds = sorted(preds, key=lambda x: x["score"], reverse=True)
+    # Group predictions by image ID
+    preds_by_img: Dict[int, List[Tuple[int, float, List[float]]]] = defaultdict(list)
+    for p_idx, p in enumerate(preds):
+        preds_by_img[p["img_id"]].append((p_idx, p["score"], p["box"]))
+
+    # Precompute best IoU and GT index for each prediction via image-level vectorized matrix operations
+    best_iou_arr = np.zeros(n_pred, dtype=np.float32)
+    best_gt_arr = np.full(n_pred, -1, dtype=np.int32)
+    img_id_arr = np.zeros(n_pred, dtype=np.int32)
+    score_arr = np.zeros(n_pred, dtype=np.float32)
+
+    for img_id, p_list in preds_by_img.items():
+        p_indices = [x[0] for x in p_list]
+        scores = [x[1] for x in p_list]
+        boxes = [x[2] for x in p_list]
+
+        img_id_arr[p_indices] = img_id
+        score_arr[p_indices] = scores
+
+        if img_id not in gt_tensors:
+            continue
+
+        b1 = torch.tensor(boxes, dtype=torch.float32)
+        b2 = gt_tensors[img_id]
+
+        area1 = (b1[:, 2] - b1[:, 0]).clamp(min=0.0) * (b1[:, 3] - b1[:, 1]).clamp(min=0.0)
+        area2 = (b2[:, 2] - b2[:, 0]).clamp(min=0.0) * (b2[:, 3] - b2[:, 1]).clamp(min=0.0)
+        inter_x1 = torch.maximum(b1[:, None, 0], b2[None, :, 0])
+        inter_y1 = torch.maximum(b1[:, None, 1], b2[None, :, 1])
+        inter_x2 = torch.minimum(b1[:, None, 2], b2[None, :, 2])
+        inter_y2 = torch.minimum(b1[:, None, 3], b2[None, :, 3])
+        inter_w = (inter_x2 - inter_x1).clamp(min=0.0)
+        inter_h = (inter_y2 - inter_y1).clamp(min=0.0)
+        inter_area = inter_w * inter_h
+        union_area = area1[:, None] + area2[None, :] - inter_area
+        ious = inter_area / (union_area + 1e-16)
+        best_ious, best_indices = ious.max(dim=1)
+        best_iou_arr[p_indices] = best_ious.cpu().numpy()
+        best_gt_arr[p_indices] = best_indices.cpu().numpy()
+
+    # Sort all predictions globally by score descending
+    sort_order = np.argsort(-score_arr)
+    sorted_best_iou = best_iou_arr[sort_order]
+    sorted_best_gt = best_gt_arr[sort_order]
+    sorted_img_ids = img_id_arr[sort_order]
 
     ap_per_iou: Dict[str, float] = {}
     p50 = 0.0
     r50 = 0.0
 
     for t_idx, iou_thresh in enumerate(iou_thresholds):
-        # Track matched ground truths per image for this IoU threshold
-        matched_gt: Dict[int, Set[int]] = defaultdict(set)
+        matched_gt: set = set()
         tp = np.zeros(n_pred, dtype=np.float32)
         fp = np.zeros(n_pred, dtype=np.float32)
 
-        for p_idx, pred in enumerate(sorted_preds):
-            img_id = pred["img_id"]
-            p_box = torch.tensor(pred["box"], dtype=torch.float32).unsqueeze(0)
-
-            if img_id not in gt_by_img:
-                fp[p_idx] = 1.0
-                continue
-
-            img_gts = torch.stack(gt_by_img[img_id], dim=0)
-            ious = box_iou_xyxy(p_box, img_gts).squeeze(0)  # [M]
-
-            best_iou, best_gt_idx = ious.max(dim=0)
-            best_iou_val = best_iou.item()
-            best_gt_idx_val = best_gt_idx.item()
-
-            if best_iou_val >= iou_thresh:
-                if best_gt_idx_val not in matched_gt[img_id]:
-                    tp[p_idx] = 1.0
-                    matched_gt[img_id].add(best_gt_idx_val)
+        for i in range(n_pred):
+            gid = sorted_best_gt[i]
+            if gid >= 0 and sorted_best_iou[i] >= iou_thresh:
+                key = (sorted_img_ids[i], gid)
+                if key not in matched_gt:
+                    tp[i] = 1.0
+                    matched_gt.add(key)
                 else:
-                    fp[p_idx] = 1.0  # Duplicate detection
+                    fp[i] = 1.0
             else:
-                fp[p_idx] = 1.0
+                fp[i] = 1.0
 
         cum_tp = np.cumsum(tp)
         cum_fp = np.cumsum(fp)
@@ -578,6 +615,36 @@ def run_evaluation(
     avg_ms = float(np.mean(latencies)) if latencies else 0.0
     fps = float(1000.0 / avg_ms) if avg_ms > 0 else 0.0
 
+    total_preds = sum(len(preds) for preds in all_preds_per_class.values())
+    total_gts = sum(len(gts) for gts in all_gts_per_class.values())
+    per_class_preds_count = {cls_name: len(all_preds_per_class[c_id]) for c_id, cls_name in enumerate(BENCHMARK_CLASSES)}
+    per_class_gts_count = {cls_name: len(all_gts_per_class[c_id]) for c_id, cls_name in enumerate(BENCHMARK_CLASSES)}
+
+    # Size-based distributions (COCO standard: small < 32^2, medium 32^2 to 96^2, large > 96^2)
+    pred_size_counts = {"small": 0, "medium": 0, "large": 0}
+    for preds in all_preds_per_class.values():
+        for p in preds:
+            b = p["box"]
+            area = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+            if area < 32 * 32:
+                pred_size_counts["small"] += 1
+            elif area <= 96 * 96:
+                pred_size_counts["medium"] += 1
+            else:
+                pred_size_counts["large"] += 1
+
+    gt_size_counts = {"small": 0, "medium": 0, "large": 0}
+    for gts in all_gts_per_class.values():
+        for g in gts:
+            b = g["box"]
+            area = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+            if area < 32 * 32:
+                gt_size_counts["small"] += 1
+            elif area <= 96 * 96:
+                gt_size_counts["medium"] += 1
+            else:
+                gt_size_counts["large"] += 1
+
     # 7. Print Console Report
     print("\n" + "=" * 40)
     print("IRD V1 BENCHMARK EVALUATION RESULTS")
@@ -585,15 +652,22 @@ def run_evaluation(
     print(f"Model:            IRD (IndianRoadDetection)")
     print(f"Parameters:       {n_params:,}")
     print(f"Images evaluated: {n_images}")
+    print(f"Total Preds:      {total_preds}")
+    print(f"Total GTs:        {total_gts}")
     print(f"Precision:        {mean_precision:.3f}")
     print(f"Recall:           {mean_recall:.3f}")
     print(f"mAP@0.50:         {mAP50:.3f}")
     print(f"mAP@0.50:0.95:    {mAP50_95:.3f}")
     print()
-    print("Per-class AP@0.50:")
+    print(f"GT Sizes:   Small: {gt_size_counts['small']}, Med: {gt_size_counts['medium']}, Large: {gt_size_counts['large']}")
+    print(f"Pred Sizes: Small: {pred_size_counts['small']}, Med: {pred_size_counts['medium']}, Large: {pred_size_counts['large']}")
+    print()
+    print("Per-class AP@0.50 & Predictions:")
     for cls_name in BENCHMARK_CLASSES:
         ap = per_class_results[cls_name]["ap50"]
-        print(f"{cls_name:<18} {ap:.3f}")
+        n_p = per_class_preds_count[cls_name]
+        n_g = per_class_gts_count[cls_name]
+        print(f"{cls_name:<18} AP50: {ap:.3f} | Preds: {n_p:>5} | GT: {n_g:>5}")
     print()
     print("Inference latency:")
     print(f"Average ms/image: {avg_ms:.2f}")
@@ -608,10 +682,16 @@ def run_evaluation(
         "image_size": img_size,
         "number_of_images": n_images,
         "parameter_count": n_params,
+        "total_predictions": total_preds,
+        "total_ground_truths": total_gts,
+        "pred_size_counts": pred_size_counts,
+        "gt_size_counts": gt_size_counts,
         "precision": round(mean_precision, 4),
         "recall": round(mean_recall, 4),
         "mAP50": round(mAP50, 4),
         "mAP50_95": round(mAP50_95, 4),
+        "per_class_predictions": per_class_preds_count,
+        "per_class_ground_truths": per_class_gts_count,
         "per_class_ap50": {cls: round(per_class_results[cls]["ap50"], 4) for cls in BENCHMARK_CLASSES},
         "per_class_ap50_95": {cls: round(per_class_results[cls]["ap50_95"], 4) for cls in BENCHMARK_CLASSES},
         "average_latency_ms": round(avg_ms, 2),

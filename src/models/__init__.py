@@ -29,8 +29,12 @@ from src.models.losses import (
     IndianRoadLoss,
     LossResult,
     MultiScaleSpatialMatcher,
+    TaskAlignedAssignor,
+    TaskAlignedLoss,
+    TaskAlignedLossResult,
     bbox_ciou,
     build_loss,
+    build_task_aligned_loss,
     decode_boxes_at_indices,
 )
 from src.models.neck import (
@@ -42,6 +46,7 @@ from src.models.neck import (
     RoadFusionBlock,
     build_neck,
 )
+from src.models.task_aligned_decoder import decode_ird_v2_predictions
 
 __all__ = [
     # Full Integrated Model
@@ -77,4 +82,10 @@ __all__ = [
     "MultiScaleSpatialMatcher",
     "bbox_ciou",
     "decode_boxes_at_indices",
+    # V2 Task-Aligned Components
+    "TaskAlignedAssignor",
+    "TaskAlignedLoss",
+    "TaskAlignedLossResult",
+    "build_task_aligned_loss",
+    "decode_ird_v2_predictions",
 ]

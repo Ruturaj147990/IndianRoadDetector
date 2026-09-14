@@ -1,4 +1,5 @@
 # PowerShell launcher for IRD ROCm GPU execution on AMD Radeon RX 7700 XT
+$env:MIOPEN_FIND_MODE = "2"
 $rocm_python = "E:\ComfyUI_windows_portable\python_embeded\python.exe"
 
 if (Test-Path $rocm_python) {

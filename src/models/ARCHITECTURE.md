@@ -190,4 +190,33 @@ IndianRoadHead
 
 - **Static & Synthetic Test Suite**: 100% passed across all 8 verification suites in [`tests/test_final_architecture.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/tests/test_final_architecture.py).
 - **CUDA / ROCm / CPU Ready**: Pure standard PyTorch ops, zero hardcoded `.cuda()` calls.
-- **Status**: **ARCHITECTURE READY FOR FULL TRAINING**
+- **Status**: **V1.5 AUTHORITATIVE BASELINE READY**
+
+---
+
+## 9. Component 6: IRD V2 Task-Aligned System (DEVELOPMENT / NOT BENCHMARKED)
+
+> [!NOTE]
+> **Status: Under Active Development / Not Benchmarked.**
+> IRD V2 is an architectural and training system redesign developed to eliminate the 506k+ false positive problem and crowded-scene recall drop identified during the IRD V1.5 deep error analysis.
+
+### Core Enhancements:
+1. **Task-Aligned Assignor (TAL)** ([`src/models/losses/task_aligned_assignor.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/src/models/losses/task_aligned_assignor.py)):
+   - Replaces static geometric center radius with joint metric: $t = s^{0.5} \times \text{IoU}^{6.0}$.
+   - Dynamically retains top-$k=10$ candidate anchors per ground truth with in-box spatial gating.
+   - Deterministic multi-GT conflict resolution assigning contested anchors to $\arg\max_j t_{j, i}$.
+2. **Varifocal Classification Loss (VFL)** ([`src/models/losses/task_aligned_loss.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/src/models/losses/task_aligned_loss.py)):
+   - Positives ($q > 0$): Supervised with continuous alignment target $q = \text{IoU} \times \frac{t}{\max(t)}$.
+   - Negatives ($q = 0$): Heavily downweighted with focal loss $-\alpha p^\gamma \log(1 - p)$ ($\alpha=0.75, \gamma=2.0$), driving background logits strongly negative.
+3. **Quality-Weighted CIoU Loss**:
+   - Weights bounding box CIoU loss by continuous alignment target $q_i$, downweighting sloppy boxes.
+4. **Explicit Zero Background Supervision**:
+   - All background grid cells receive explicit continuous targets of $0.0$ on both quality and objectness branches.
+5. **Calibrated Task-Aligned Inference Decoder** ([`src/models/task_aligned_decoder.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/src/models/task_aligned_decoder.py)):
+   - Primary score: $\text{Score} = \text{Cls}^{1.0} \times \text{Quality}^{1.0}$ (or direct $\text{Cls}$).
+   - Completely eliminates square-root background noise inflation.
+   - Class-aware NMS default: $\text{IoU} = 0.40, \text{conf} = 0.25$.
+6. **Validation Status**:
+   - 18/18 Unit Tests Passed in [`tests/test_ird_v2_task_aligned.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/tests/test_ird_v2_task_aligned.py).
+   - Static verification passed with exact parameter match (4,441,989) and zero NaNs/Infs in [`scripts/verify_ird_v2.py`](file:///c:/Users/limbk/OneDrive/Desktop/YOLO/IndianRoadDetector/scripts/verify_ird_v2.py).
+   - Checkpoint `ird_best.pt` 100% preserved. Zero training performed locally.

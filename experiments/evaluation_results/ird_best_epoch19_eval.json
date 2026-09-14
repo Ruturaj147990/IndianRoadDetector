@@ -1,0 +1,82 @@
+{
+  "model_name": "IRD \u2014 IndianRoadDetection (V1)",
+  "checkpoint_path": "experiments/custom_model/final_training_50ep/ird_best.pt",
+  "dataset_path": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\data\\indian_road_yolo\\data.yaml",
+  "image_size": 640,
+  "number_of_images": 1719,
+  "parameter_count": 4441989,
+  "total_predictions": 515700,
+  "total_ground_truths": 8757,
+  "pred_size_counts": {
+    "small": 4610,
+    "medium": 156659,
+    "large": 354431
+  },
+  "gt_size_counts": {
+    "small": 405,
+    "medium": 2509,
+    "large": 5843
+  },
+  "precision": 0.0124,
+  "recall": 0.513,
+  "mAP50": 0.2968,
+  "mAP50_95": 0.1923,
+  "per_class_predictions": {
+    "person": 78945,
+    "rider": 16447,
+    "car": 84601,
+    "truck": 27116,
+    "bus": 71287,
+    "motorcycle": 39659,
+    "bicycle": 8848,
+    "autorickshaw": 44149,
+    "animal": 34857,
+    "vehicle fallback": 29746,
+    "traffic light": 5123,
+    "traffic sign": 74922
+  },
+  "per_class_ground_truths": {
+    "person": 551,
+    "rider": 1103,
+    "car": 4293,
+    "truck": 250,
+    "bus": 183,
+    "motorcycle": 1156,
+    "bicycle": 215,
+    "autorickshaw": 284,
+    "animal": 102,
+    "vehicle fallback": 279,
+    "traffic light": 99,
+    "traffic sign": 242
+  },
+  "per_class_ap50": {
+    "person": 0.2528,
+    "rider": 0.5046,
+    "car": 0.8454,
+    "truck": 0.1722,
+    "bus": 0.2825,
+    "motorcycle": 0.559,
+    "bicycle": 0.3867,
+    "autorickshaw": 0.4583,
+    "animal": 0.001,
+    "vehicle fallback": 0.0846,
+    "traffic light": 0.0002,
+    "traffic sign": 0.0148
+  },
+  "per_class_ap50_95": {
+    "person": 0.1138,
+    "rider": 0.2732,
+    "car": 0.638,
+    "truck": 0.1129,
+    "bus": 0.2147,
+    "motorcycle": 0.3252,
+    "bicycle": 0.2808,
+    "autorickshaw": 0.3064,
+    "animal": 0.0006,
+    "vehicle fallback": 0.0341,
+    "traffic light": 0.0,
+    "traffic sign": 0.0075
+  },
+  "average_latency_ms": 130.87,
+  "fps": 7.64
+}

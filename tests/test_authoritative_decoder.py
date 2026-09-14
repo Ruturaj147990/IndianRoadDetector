@@ -14,7 +14,10 @@ Verifies:
 import math
 import sys
 from pathlib import Path
-import pytest
+try:
+    import pytest
+except ImportError:
+    pytest = None
 import torch
 
 _project_root = str(Path(__file__).resolve().parents[1])

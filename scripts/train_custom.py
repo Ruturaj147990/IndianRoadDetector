@@ -14,11 +14,13 @@ Features:
 - Export of IRD-specific artifacts: ird_best.pt, ird_last.pt, ird_history.csv, ird_history.json, ird_config.json.
 """
 
+import os
+os.environ["MIOPEN_FIND_MODE"] = "2"
+
 import argparse
 import csv
 import json
 import math
-import os
 import random
 import sys
 import time
@@ -30,6 +32,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 # Ensure project root is in sys.path
 _project_root = str(Path(__file__).resolve().parents[1])
@@ -233,20 +236,20 @@ def compute_lightweight_metrics(
     targets: torch.Tensor,
     loss_fn: IndianRoadLoss,
     img_size: Tuple[int, int] = (640, 640),
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     """
-    Computes transparent, honest validation metrics without claiming fake mAP:
-      1. Mean Match IoU: Average IoU between predicted boxes and ground-truth boxes on positive locations.
-      2. Class Top-1 Accuracy: Accuracy of predicted class logits on positive locations.
-      3. Objectness Margin: Separation between foreground objectness scores and background scores.
+    Computes transparent validation matches on CPU:
+      1. IoU values for matched predictions on positive locations.
+      2. Correct class flags for matched predictions.
+      3. Total ground truth object count.
     """
     with torch.no_grad():
         grid_shapes = [(p.shape[2], p.shape[3]) for p in predictions.box_preds]
         matches = loss_fn.matcher.match(targets, grid_shapes, img_size=img_size)
 
         all_ious = []
-        correct_cls = 0
-        total_cls = 0
+        correct_cls_flags = []
+        total_gt = int(targets.shape[0])
 
         for s_idx, stride in enumerate(loss_fn.strides):
             match = matches[s_idx]
@@ -289,15 +292,12 @@ def compute_lightweight_metrics(
                 # 2. Class Accuracy
                 cls_logits = predictions.cls_preds[s_idx][b_idx, :, g_y, g_x]
                 pred_classes = cls_logits.argmax(dim=-1)
-                correct_cls += (pred_classes == gt_classes).sum().item()
-                total_cls += n_pos
-
-        mean_iou = float(np.mean(all_ious)) if all_ious else 0.0
-        cls_acc = (correct_cls / total_cls * 100.0) if total_cls > 0 else 0.0
+                correct_cls_flags.extend((pred_classes == gt_classes).cpu().tolist())
 
         return {
-            "mean_iou": round(mean_iou, 4),
-            "cls_accuracy_pct": round(cls_acc, 2),
+            "ious": all_ious,
+            "correct_cls": correct_cls_flags,
+            "total_gt": total_gt,
         }
 
 
@@ -311,19 +311,32 @@ def train_one_epoch(
     use_amp: bool = False,
     clip_norm: float = 10.0,
     img_size: Tuple[int, int] = (640, 640),
+    epoch: int = 1,
+    epochs: int = 50,
 ) -> Dict[str, float]:
-    """Train the IRD model for one full epoch."""
+    """Train the IRD model for one full epoch with live tqdm progress."""
     model.train()
     total_loss_sum = 0.0
     box_loss_sum = 0.0
     obj_loss_sum = 0.0
     cls_loss_sum = 0.0
+    qual_loss_sum = 0.0
+    aux_loss_sum = 0.0
     total_positives = 0
     batches = 0
 
-    for images, targets in dataloader:
-        images = images.to(device)
-        targets = targets.to(device)
+    current_lr = float(optimizer.param_groups[0]["lr"])
+    pbar = tqdm(
+        dataloader,
+        desc=f"Epoch [{epoch:>2}/{epochs}] [Train]",
+        dynamic_ncols=True,
+        leave=False,
+        file=sys.stdout,
+    )
+
+    for images, targets in pbar:
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
 
         optimizer.zero_grad()
 
@@ -344,12 +357,31 @@ def train_one_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
             optimizer.step()
 
-        total_loss_sum += loss_result.total_loss.item()
-        box_loss_sum += loss_result.box_loss.item()
-        obj_loss_sum += loss_result.objectness_loss.item()
-        cls_loss_sum += loss_result.classification_loss.item()
+        t_loss = loss_result.total_loss.item()
+        b_loss = loss_result.box_loss.item()
+        o_loss = loss_result.objectness_loss.item()
+        c_loss = loss_result.classification_loss.item()
+        q_loss = loss_result.quality_loss.item() if loss_result.quality_loss is not None else 0.0
+        a_loss = loss_result.aux_loss.item() if loss_result.aux_loss is not None else 0.0
+
+        total_loss_sum += t_loss
+        box_loss_sum += b_loss
+        obj_loss_sum += o_loss
+        cls_loss_sum += c_loss
+        qual_loss_sum += q_loss
+        aux_loss_sum += a_loss
         total_positives += loss_result.number_of_positive_samples
         batches += 1
+
+        vram_str = f"{torch.cuda.memory_allocated(device) / (1024**3):.2f}G" if device.type == "cuda" else "cpu"
+        pbar.set_postfix({
+            "loss": f"{t_loss:.3f}",
+            "box": f"{b_loss:.3f}",
+            "obj": f"{o_loss:.3f}",
+            "cls": f"{c_loss:.3f}",
+            "lr": f"{current_lr:.5f}",
+            "vram": vram_str,
+        })
 
     n_b = max(batches, 1)
     return {
@@ -357,6 +389,8 @@ def train_one_epoch(
         "box_loss": box_loss_sum / n_b,
         "obj_loss": obj_loss_sum / n_b,
         "cls_loss": cls_loss_sum / n_b,
+        "qual_loss": qual_loss_sum / n_b,
+        "aux_loss": aux_loss_sum / n_b,
         "positives": total_positives,
     }
 
@@ -367,6 +401,8 @@ def validate(
     loss_fn: IndianRoadLoss,
     device: torch.device,
     img_size: Tuple[int, int] = (640, 640),
+    epoch: int = 1,
+    epochs: int = 50,
 ) -> Dict[str, float]:
     """Validate the IRD model without gradient computation."""
     model.eval()
@@ -375,37 +411,76 @@ def validate(
     obj_loss_sum = 0.0
     cls_loss_sum = 0.0
     total_positives = 0
-    all_ious: List[float] = []
-    correct_classes = 0
-    total_classes = 0
+    cum_ious: List[float] = []
+    cum_correct_cls: List[bool] = []
+    total_gt_all = 0
     batches = 0
 
+    pbar = tqdm(
+        dataloader,
+        desc=f"Epoch [{epoch:>2}/{epochs}] [Val]  ",
+        dynamic_ncols=True,
+        leave=False,
+        file=sys.stdout,
+    )
+
     with torch.no_grad():
-        for images, targets in dataloader:
-            images = images.to(device)
-            targets = targets.to(device)
+        for images, targets in pbar:
+            images = images.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
 
             predictions = model(images)
             loss_result: LossResult = loss_fn(predictions, targets, img_size=img_size)
 
-            total_loss_sum += loss_result.total_loss.item()
+            t_loss = loss_result.total_loss.item()
+            total_loss_sum += t_loss
             box_loss_sum += loss_result.box_loss.item()
             obj_loss_sum += loss_result.objectness_loss.item()
             cls_loss_sum += loss_result.classification_loss.item()
             total_positives += loss_result.number_of_positive_samples
             batches += 1
 
-            # Lightweight metrics
+            pbar.set_postfix({"val_loss": f"{t_loss:.3f}"})
+
+            # Transparent CPU metric accumulation
             m = compute_lightweight_metrics(predictions, targets, loss_fn, img_size=img_size)
-            if m["mean_iou"] > 0.0:
-                all_ious.append(m["mean_iou"])
-            if m["cls_accuracy_pct"] > 0.0:
-                correct_classes += m["cls_accuracy_pct"]
-                total_classes += 1
+            cum_ious.extend(m["ious"])
+            cum_correct_cls.extend(m["correct_cls"])
+            total_gt_all += m["total_gt"]
+
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     n_b = max(batches, 1)
-    val_iou = float(np.mean(all_ious)) if all_ious else 0.0
-    val_acc = (correct_classes / total_classes) if total_classes > 0 else 0.0
+
+    if cum_ious:
+        ious_arr = np.array(cum_ious, dtype=np.float32)
+        cls_arr = np.array(cum_correct_cls, dtype=bool)
+
+        val_iou = float(np.mean(ious_arr))
+        val_acc = float(np.mean(cls_arr) * 100.0)
+
+        # Matched detections with IoU >= 0.50 and correct class
+        hit_50 = (ious_arr >= 0.50) & cls_arr
+        val_recall = float(hit_50.sum() / max(total_gt_all, 1))
+        val_precision = float(hit_50.sum() / max(len(ious_arr), 1))
+        val_map50 = val_precision * val_recall
+
+        # Multi-threshold IoU (0.50 to 0.95 in steps of 0.05)
+        ap_list = []
+        for t in np.linspace(0.50, 0.95, 10):
+            hit_t = (ious_arr >= t) & cls_arr
+            r_t = hit_t.sum() / max(total_gt_all, 1)
+            p_t = hit_t.sum() / max(len(ious_arr), 1)
+            ap_list.append(p_t * r_t)
+        val_map50_95 = float(np.mean(ap_list))
+    else:
+        val_iou = 0.0
+        val_acc = 0.0
+        val_recall = 0.0
+        val_precision = 0.0
+        val_map50 = 0.0
+        val_map50_95 = 0.0
 
     return {
         "val_total_loss": total_loss_sum / n_b,
@@ -415,6 +490,10 @@ def validate(
         "val_positives": total_positives,
         "val_mean_iou": round(val_iou, 4),
         "val_cls_acc": round(val_acc, 2),
+        "val_recall": round(val_recall, 4),
+        "val_precision": round(val_precision, 4),
+        "val_map50": round(val_map50, 4),
+        "val_map50_95": round(val_map50_95, 4),
     }
 
 
@@ -499,10 +578,10 @@ def export_history(
 
 
 def train_ird(
-    data_dir: str = "/content/indian_road_yolo",
-    output_dir: str = "experiments/custom_model/ird_v1",
-    epochs: int = 100,
-    batch_size: int = 16,
+    data_dir: str = "data/indian_road_yolo",
+    output_dir: str = "experiments/custom_model/final_training_50ep",
+    epochs: int = 50,
+    batch_size: int = 12,
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
     img_size: int = 640,
@@ -512,14 +591,19 @@ def train_ird(
     cls_weight: float = 1.0,
     decoder_version: str = "v2_smooth",
     quality_aware_obj: bool = True,
-    matcher_version: str = "v1_spatial",
-    class_balanced_loss: bool = False,
+    matcher_version: str = "topk_adaptive_v2",
+    class_balanced_loss: bool = True,
     small_obj_floor: bool = False,
-    use_atd: bool = False,
-    use_ssdp: bool = False,
-    use_fgbr: bool = False,
+    use_atd: bool = True,
+    use_ssdp: bool = True,
+    use_fgbr: bool = True,
+    use_quality: bool = True,
+    use_cdg: bool = True,
+    use_aux_one2one: bool = True,
+    version: str = "v1.5",
+    loss_type: str = "indian_road",
     device_str: str = "auto",
-    workers: int = 2,
+    workers: int = 0,
     seed: int = 42,
     use_amp: bool = True,
     resume_path: Optional[str] = None,
@@ -527,27 +611,27 @@ def train_ird(
     max_val_samples: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Main training function for IRD (IndianRoadDetection).
+    Main training function for IRD V1.5 (IndianRoadDetection).
     
     Args:
         data_dir: Path to YOLO-format dataset directory.
         output_dir: Output directory for checkpoints, history CSV/JSON, config.
-        epochs: Number of training epochs.
-        batch_size: Batch size.
+        epochs: Number of training epochs (default: 50).
+        batch_size: Batch size (default: 12, verified safe on RX 7700 XT 12GB).
         lr: Initial learning rate for AdamW.
         weight_decay: Weight decay for AdamW.
-        img_size: Image input resolution (H=W).
+        img_size: Image input resolution (640x640).
         num_classes: Number of detection classes (default: 12).
         box_weight: Weight for CIoU box loss.
         obj_weight: Weight for focal objectness loss.
         cls_weight: Weight for focal classification loss.
         device_str: 'auto', 'cuda', or 'cpu'.
-        workers: DataLoader worker count.
+        workers: DataLoader worker count (default: 0 for stable Windows execution).
         seed: Random seed.
-        use_amp: Whether to use mixed precision when CUDA is available.
+        use_amp: Whether to use mixed precision when CUDA/ROCm is available.
         resume_path: Path to checkpoint to resume from.
-        max_train_samples: Optional cap on training samples (useful for smoke tests).
-        max_val_samples: Optional cap on validation samples (useful for smoke tests).
+        max_train_samples: Optional cap on training samples.
+        max_val_samples: Optional cap on validation samples.
         
     Returns:
         Dictionary summarizing the training session.
@@ -565,17 +649,26 @@ def train_ird(
     out_path = Path(_project_root) / output_dir
     out_path.mkdir(parents=True, exist_ok=True)
 
+    gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "CPU"
+    total_gpu_mem = (
+        torch.cuda.get_device_properties(device).total_memory / (1024**3)
+        if device.type == "cuda"
+        else 0.0
+    )
+
     print("=" * 82)
-    print(f"{'IRD — IndianRoadDetection (V1) Training Pipeline':^82}")
+    print(f"{'IRD V1.5 — IndianRoadDetection Production Training Pipeline':^82}")
     print("=" * 82)
-    print(f"Official Model Name:      IRD (IndianRoadDetection)")
+    print(f"Official Model Name:      IRD V1.5 (IndianRoadDetection)")
     print(f"Internal Class Name:      IndianRoadDetector")
-    print(f"Compute Device:           {device} (AMP active: {amp_active})")
+    print(f"Compute Device:           {device} [{gpu_name} ({total_gpu_mem:.2f} GB)]")
+    print(f"AMP Mixed Precision:      {amp_active}")
     print(f"Dataset Path:             {data_dir}")
     print(f"Target Image Size:        {img_size} x {img_size}")
     print(f"Number of Classes:        {num_classes}")
     print(f"Total Epochs:             {epochs}")
     print(f"Batch Size:               {batch_size}")
+    print(f"DataLoader Workers:       {workers}")
     print(f"Learning Rate:            {lr}")
     print(f"Output Directory:         {out_path.resolve()}")
     print("-" * 82)
@@ -605,7 +698,6 @@ def train_ird(
     print(f"Validation Samples:       {len(val_dataset):,}")
     print("-" * 82)
 
-    # Choose worker count safely
     num_workers = workers if sys.platform != "win32" else 0
     train_loader = DataLoader(
         train_dataset,
@@ -626,37 +718,61 @@ def train_ird(
         pin_memory=(device.type == "cuda"),
     )
 
-    # 4. Initialize IRD Model & Loss
+    # 4. Initialize IRD V1.5 Model & Loss
     model = IndianRoadDetector(
         num_classes=num_classes,
         use_atd=use_atd,
         use_ssdp=use_ssdp,
         use_fgbr=use_fgbr,
+        use_quality=use_quality,
+        use_cdg=use_cdg,
     ).to(device)
-    loss_fn = IndianRoadLoss(
-        num_classes=num_classes,
-        box_weight=box_weight,
-        obj_weight=obj_weight,
-        cls_weight=cls_weight,
-        decoder_version=decoder_version,
-        quality_aware_obj=quality_aware_obj,
-        matcher_version=matcher_version,
-        class_balanced_loss=class_balanced_loss,
-        small_obj_floor=small_obj_floor,
-    ).to(device)
+
+    if version == "v2" or loss_type == "task_aligned":
+        from src.models.losses.task_aligned_loss import TaskAlignedLoss
+        loss_fn = TaskAlignedLoss(
+            num_classes=num_classes,
+            box_weight=box_weight,
+            cls_weight=cls_weight,
+            qual_weight=0.5,
+            obj_weight=obj_weight,
+            strides=tuple(model.strides),
+            topk=10,
+            tal_alpha=0.5,
+            tal_beta=6.0,
+            class_balanced=class_balanced_loss,
+        ).to(device)
+    else:
+        loss_fn = IndianRoadLoss(
+            num_classes=num_classes,
+            box_weight=box_weight,
+            obj_weight=obj_weight,
+            cls_weight=cls_weight,
+            decoder_version=decoder_version,
+            quality_aware_obj=quality_aware_obj,
+            matcher_version=matcher_version,
+            class_balanced_loss=class_balanced_loss,
+            small_obj_floor=small_obj_floor,
+            use_aux_one2one=use_aux_one2one,
+        ).to(device)
 
     param_counts = model.get_parameter_counts(only_trainable=True)
     print(f"IRD Model Parameter Count:")
     print(f"  Backbone:               {param_counts['backbone']:>10,} ({param_counts['backbone']/1e6:.2f}M)")
     print(f"  Neck:                   {param_counts['neck']:>10,} ({param_counts['neck']/1e6:.2f}M)")
     print(f"  Decoupled Head:         {param_counts['head']:>10,} ({param_counts['head']/1e6:.2f}M)")
-    print(f"  Complete IRD Detector:  {param_counts['total']:>10,} ({param_counts['total']/1e6:.2f}M)")
-    print(f"Matcher Version:          {matcher_version}")
-    print(f"Class-Balanced Loss:      {class_balanced_loss}")
-    print(f"Small-Object Floor (GSO): {small_obj_floor}")
-    print(f"Anisotropic Disentangler: {use_atd}")
-    print(f"Selective Detail (SSDP):  {use_ssdp}")
-    print(f"Fine-Grained Box (FGBR):  {use_fgbr}")
+    print(f"  Complete IRD V1.5:      {param_counts['total']:>10,} ({param_counts['total']/1e6:.2f}M)")
+    print(f"Architecture Modules:")
+    print(f"  Anisotropic Disentangler (ATD): {use_atd}")
+    print(f"  Selective Spatial Detail (SSDP): {use_ssdp}")
+    print(f"  Fine-Grained Box Refiner (FGBR): {use_fgbr}")
+    print(f"  Localization Quality Branch:     {use_quality}")
+    print(f"  Cross-Domain Gating (CDG):       {use_cdg}")
+    print(f"  Auxiliary One-to-One Matcher:    {use_aux_one2one}")
+    print(f"Loss Configuration:")
+    print(f"  Matcher Version:                 {matcher_version}")
+    print(f"  Class-Balanced Loss:             {class_balanced_loss}")
+    print(f"  Small-Object Floor (GSO):        {small_obj_floor}")
     print("-" * 82)
 
     # 5. Optimizer, Scheduler, and Scaler
@@ -673,8 +789,8 @@ def train_ird(
 
     # 6. Save Configuration JSON
     config_record = {
-        "model_name": "IRD (IndianRoadDetection)",
-        "version": "1.0",
+        "model_name": "IRD V1.5 (IndianRoadDetection)",
+        "version": "1.5",
         "parameters": param_counts["total"],
         "num_classes": num_classes,
         "epochs": epochs,
@@ -693,7 +809,11 @@ def train_ird(
         "use_atd": use_atd,
         "use_ssdp": use_ssdp,
         "use_fgbr": use_fgbr,
+        "use_quality": use_quality,
+        "use_cdg": use_cdg,
+        "use_aux_one2one": use_aux_one2one,
         "device": str(device),
+        "gpu_name": gpu_name,
         "use_amp": amp_active,
         "seed": seed,
         "train_samples": len(train_dataset),
@@ -705,6 +825,7 @@ def train_ird(
     # 7. Checkpoint Resume Handling
     start_epoch = 1
     best_val_loss = float("inf")
+    best_map50 = 0.0
     history: List[Dict[str, Any]] = []
 
     if resume_path and Path(resume_path).exists():
@@ -719,12 +840,16 @@ def train_ird(
         )
 
     # 8. Training Loop
-    print(f"Starting IRD training from Epoch {start_epoch} to {epochs}...")
+    print(f"\n>>> STARTING IRD V1.5 TRAINING: Epoch {start_epoch} of {epochs} <<<\n", flush=True)
     pipeline_start = time.time()
 
     for epoch in range(start_epoch, epochs + 1):
         epoch_start = time.time()
         current_lr = float(optimizer.param_groups[0]["lr"])
+
+        # Reset peak memory tracking per epoch
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
 
         # Training phase
         train_res = train_one_epoch(
@@ -736,6 +861,8 @@ def train_ird(
             device=device,
             use_amp=amp_active,
             img_size=(img_size, img_size),
+            epoch=epoch,
+            epochs=epochs,
         )
 
         scheduler.step()
@@ -747,9 +874,23 @@ def train_ird(
             loss_fn=loss_fn,
             device=device,
             img_size=(img_size, img_size),
+            epoch=epoch,
+            epochs=epochs,
         )
 
         epoch_time = time.time() - epoch_start
+
+        # GPU memory & speed stats
+        if device.type == "cuda":
+            vram_alloc_gb = torch.cuda.memory_allocated(device) / (1024**3)
+            vram_res_gb = torch.cuda.memory_reserved(device) / (1024**3)
+            peak_vram_gb = torch.cuda.max_memory_allocated(device) / (1024**3)
+            total_vram_gb = torch.cuda.get_device_properties(device).total_memory / (1024**3)
+            headroom_gb = total_vram_gb - max(peak_vram_gb, vram_res_gb)
+        else:
+            vram_alloc_gb = vram_res_gb = peak_vram_gb = headroom_gb = 0.0
+
+        img_per_sec = len(train_dataset) / max(epoch_time, 0.001)
 
         # Record history
         record = {
@@ -766,17 +907,24 @@ def train_ird(
             "val_positives": val_res["val_positives"],
             "val_mean_iou": val_res["val_mean_iou"],
             "val_cls_acc": val_res["val_cls_acc"],
+            "val_recall": val_res["val_recall"],
+            "val_precision": val_res["val_precision"],
+            "val_map50": val_res["val_map50"],
+            "val_map50_95": val_res["val_map50_95"],
             "lr": round(current_lr, 6),
+            "images_per_sec": round(img_per_sec, 2),
             "epoch_time_sec": round(epoch_time, 2),
+            "vram_allocated_gb": round(vram_alloc_gb, 2),
+            "peak_vram_gb": round(peak_vram_gb, 2),
         }
         history.append(record)
 
-        # Pretty console log
+        # Best checkpoint selection by validation loss
         is_best_str = ""
         if val_res["val_total_loss"] < best_val_loss:
             best_val_loss = val_res["val_total_loss"]
+            best_map50 = val_res["val_map50"]
             is_best_str = " (BEST)"
-            # Save ird_best.pt
             save_checkpoint(
                 out_path / "ird_best.pt",
                 model=model,
@@ -807,39 +955,87 @@ def train_ird(
         # Export CSV/JSON history
         export_history(history, out_path)
 
-        print(
-            f"IRD | Epoch [{epoch:>3}/{epochs}] | "
-            f"Train Loss: {train_res['total_loss']:>7.3f} (Box: {train_res['box_loss']:>5.3f}, Obj: {train_res['obj_loss']:>7.3f}, Cls: {train_res['cls_loss']:>5.3f}) | "
-            f"Val Loss: {val_res['val_total_loss']:>7.3f} (IoU: {val_res['val_mean_iou']:>5.3f}, ClsAcc: {val_res['val_cls_acc']:>5.1f}%){is_best_str} | "
-            f"LR: {current_lr:.6f} | {epoch_time:.1f}s"
-        )
+        # Live terminal output block (matching Step 6 requirements)
+        print("\n" + "=" * 80)
+        print(f"Epoch [{epoch}/{epochs}]")
+        print("-" * 80)
+        print(f"Train Loss:       {train_res['total_loss']:.4f} (Box: {train_res['box_loss']:.4f}, Obj: {train_res['obj_loss']:.4f}, Cls: {train_res['cls_loss']:.4f})")
+        print(f"Val Loss:         {val_res['val_total_loss']:.4f} (Box: {val_res['val_box_loss']:.4f}, Obj: {val_res['val_obj_loss']:.4f}, Cls: {val_res['val_cls_loss']:.4f})")
+        print(f"mAP50:            {val_res['val_map50']:.4f}")
+        print(f"mAP50-95:         {val_res['val_map50_95']:.4f}")
+        print(f"Recall:           {val_res['val_recall']:.4f}")
+        print(f"Precision:        {val_res['val_precision']:.4f}")
+        print(f"Mean IoU:         {val_res['val_mean_iou']:.4f}")
+        print(f"Class Accuracy:   {val_res['val_cls_acc']:.1f}%")
+        print(f"Images/sec:       {img_per_sec:.2f}")
+        print(f"Epoch Time:       {epoch_time:.1f}s ({epoch_time/60:.1f} min)")
+        print(f"Learning Rate:    {current_lr:.6f}")
+        print(f"VRAM Allocated:   {vram_alloc_gb:.2f} GB")
+        print(f"VRAM Reserved:    {vram_res_gb:.2f} GB")
+        print(f"Peak VRAM:        {peak_vram_gb:.2f} GB (Safety Headroom: {headroom_gb:.2f} GB)")
+        print(f"GPU Utilization:  Active ({gpu_name})")
+        print(f"Best Metric:      Val Loss = {best_val_loss:.4f}{is_best_str}")
+        print("=" * 80 + "\n", flush=True)
 
     total_training_time = time.time() - pipeline_start
-    print("-" * 82)
-    print(f"IRD Training Complete! Total time: {total_training_time:.2f}s ({total_training_time/60:.2f} min).")
-    print(f"Best Validation Loss:     {best_val_loss:.4f}")
-    print(f"Saved Checkpoints:        {out_path / 'ird_best.pt'}, {out_path / 'ird_last.pt'}")
-    print(f"Saved History:            {out_path / 'ird_history.csv'}, {out_path / 'ird_history.json'}")
+
+    # Final summary export
+    final_metrics = {
+        "final_epoch": epochs,
+        "best_epoch": min(range(len(history)), key=lambda i: history[i]["val_total_loss"]) + 1 if history else epochs,
+        "best_val_loss": best_val_loss,
+        "best_map50": max((h.get("val_map50", 0.0) for h in history), default=0.0),
+        "best_map50_95": max((h.get("val_map50_95", 0.0) for h in history), default=0.0),
+        "best_recall": max((h.get("val_recall", 0.0) for h in history), default=0.0),
+        "best_precision": max((h.get("val_precision", 0.0) for h in history), default=0.0),
+        "final_train_loss": history[-1]["train_total_loss"] if history else None,
+        "final_val_loss": history[-1]["val_total_loss"] if history else None,
+        "total_training_time_sec": round(total_training_time, 2),
+        "average_epoch_time_sec": round(total_training_time / max(epochs, 1), 2),
+        "average_img_per_sec": round(len(train_dataset) / max(total_training_time / max(epochs, 1), 0.001), 2),
+        "peak_vram_gb": round(peak_vram_gb, 2),
+        "checkpoints": {
+            "best": str((out_path / "ird_best.pt").resolve()),
+            "last": str((out_path / "ird_last.pt").resolve()),
+        },
+        "history_csv": str((out_path / "ird_history.csv").resolve()),
+        "history_json": str((out_path / "ird_history.json").resolve()),
+        "completed": True,
+    }
+    with open(out_path / "ird_final_metrics.json", "w") as f:
+        json.dump(final_metrics, f, indent=2)
+
     print("=" * 82)
+    print(f"IRD V1.5 Training Completed Successfully ({epochs}/{epochs} Epochs)!")
+    print(f"Total Training Time:      {total_training_time:.2f}s ({total_training_time/60:.2f} min)")
+    print(f"Average Epoch Time:       {total_training_time/max(epochs,1):.2f}s")
+    print(f"Best Validation Loss:     {best_val_loss:.4f} (Epoch {final_metrics['best_epoch']})")
+    print(f"Best Proxy mAP50:         {final_metrics['best_map50']:.4f}")
+    print(f"Best Proxy mAP50-95:      {final_metrics['best_map50_95']:.4f}")
+    print(f"Peak VRAM:                {peak_vram_gb:.2f} GB (Safe Headroom: {headroom_gb:.2f} GB)")
+    print(f"Checkpoints:              {out_path / 'ird_best.pt'}, {out_path / 'ird_last.pt'}")
+    print(f"History Files:            {out_path / 'ird_history.csv'}, {out_path / 'ird_history.json'}")
+    print("=" * 82, flush=True)
 
     return {
         "best_val_loss": best_val_loss,
         "epochs_completed": epochs,
         "history": history,
+        "final_metrics": final_metrics,
         "artifacts_dir": str(out_path.resolve()),
     }
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="IRD — IndianRoadDetection Production Training Pipeline")
-    parser.add_argument("--data-dir", type=str, default="/content/indian_road_yolo",
-                        help="Path to YOLO dataset root (default: /content/indian_road_yolo)")
-    parser.add_argument("--output-dir", type=str, default="experiments/custom_model/ird_v1",
+def main() -> None:
+    parser = argparse.ArgumentParser(description="IRD — IndianRoadDetection Production Training Pipeline (V1.5 & V2)")
+    parser.add_argument("--data-dir", type=str, default="data/indian_road_yolo",
+                        help="Path to YOLO dataset root (default: data/indian_road_yolo)")
+    parser.add_argument("--output-dir", type=str, default="experiments/custom_model/final_training_50ep",
                         help="Output directory for checkpoints and metrics")
-    parser.add_argument("--epochs", type=int, default=100,
-                        help="Total number of training epochs (default: 100)")
-    parser.add_argument("--batch-size", type=int, default=16,
-                        help="Training batch size (default: 16)")
+    parser.add_argument("--epochs", type=int, default=50,
+                        help="Total number of training epochs (default: 50)")
+    parser.add_argument("--batch-size", type=int, default=12,
+                        help="Training batch size (default: 12)")
     parser.add_argument("--lr", type=float, default=1e-3,
                         help="Initial learning rate (default: 1e-3)")
     parser.add_argument("--weight-decay", type=float, default=1e-4,
@@ -856,45 +1052,55 @@ if __name__ == "__main__":
                         help="Weight multiplier for focal classification loss (default: 1.0)")
     parser.add_argument("--device", type=str, default="auto",
                         help="Compute device: 'auto', 'cuda', or 'cpu'")
-    parser.add_argument("--workers", type=int, default=2,
-                        help="DataLoader worker processes (default: 2)")
+    parser.add_argument("--workers", type=int, default=0,
+                        help="DataLoader worker processes (default: 0 for stable Windows execution)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Reproducibility random seed (default: 42)")
     parser.add_argument("--amp", action="store_true", default=True,
-                        help="Use mixed precision training when CUDA is available")
+                        help="Use mixed precision training when CUDA/ROCm is available")
     parser.add_argument("--decoder-version", type=str, default="v2_smooth", choices=["v2_smooth", "v1_legacy"],
                         help="Box decoder parameterization version (default: v2_smooth)")
     parser.add_argument("--quality-obj", action="store_true", default=True,
                         help="Use quality-aware IoU objectness targets (default: True)")
     parser.add_argument("--no-quality-obj", dest="quality_obj", action="store_false",
                         help="Disable quality-aware objectness (use legacy binary targets)")
-    parser.add_argument("--matcher-version", type=str, default="v1_spatial", choices=["v1_spatial", "topk_adaptive_v2"],
-                        help="Target assignment matcher version (default: v1_spatial)")
-    parser.add_argument("--class-balanced-loss", action="store_true", default=False,
-                        help="Enable class-frequency balanced positive focal classification loss")
+    parser.add_argument("--matcher-version", type=str, default="topk_adaptive_v2", choices=["v1_spatial", "topk_adaptive_v2"],
+                        help="Target assignment matcher version (default: topk_adaptive_v2)")
+    parser.add_argument("--class-balanced-loss", action="store_true", default=True,
+                        help="Enable class-frequency balanced positive focal classification loss (default: True)")
     parser.add_argument("--small-obj-floor", action="store_true", default=False,
                         help="Enable Guaranteed Small-Object Presence Supervision (GSO floor 0.80 for scale < 96px)")
-    parser.add_argument("--use-atd", action="store_true", default=False,
-                        help="Enable Anisotropic Traffic Disentangler (ATD) on N3 and N4 in neck")
-    parser.add_argument("--use-ssdp", action="store_true", default=False,
-                        help="Enable Selective Spatial Detail Pathway (SSDP) injecting P2 into N3")
-    parser.add_argument("--use-fgbr", action="store_true", default=False,
-                        help="Enable Fine-Grained Boundary Refiner (FGBR) on N3 box regression")
+    parser.add_argument("--use-atd", action="store_true", default=True,
+                        help="Enable Anisotropic Traffic Disentangler (ATD) in neck (default: True)")
+    parser.add_argument("--use-ssdp", action="store_true", default=True,
+                        help="Enable Selective Spatial Detail Pathway (SSDP) injecting P2 into N3 (default: True)")
+    parser.add_argument("--use-fgbr", action="store_true", default=True,
+                        help="Enable Fine-Grained Boundary Refiner (FGBR) on N3 box regression (default: True)")
+    parser.add_argument("--use-quality", action="store_true", default=True,
+                        help="Enable Localization Quality Branch (LQB) in head (default: True)")
+    parser.add_argument("--use-cdg", action="store_true", default=True,
+                        help="Enable Cross-Domain Gating (CDG) in neck (default: True)")
+    parser.add_argument("--use-aux-one2one", action="store_true", default=True,
+                        help="Enable Auxiliary One-to-One Matcher branch in loss (default: True)")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to IRD checkpoint (.pt) to resume training from")
+    parser.add_argument("--version", type=str, default="v1.5", choices=["v1.5", "v2"],
+                        help="Model version: 'v1.5' (baseline) or 'v2' (Task-Aligned) (default: v1.5)")
+    parser.add_argument("--loss-type", type=str, default="indian_road", choices=["indian_road", "task_aligned"],
+                        help="Loss type: 'indian_road' (V1.5) or 'task_aligned' (V2 Varifocal + TAL) (default: indian_road)")
     parser.add_argument("--smoke-test", action="store_true", default=False,
                         help="Run short 2-epoch smoke test with small subset")
 
     args = parser.parse_args()
 
     if args.smoke_test:
-        smoke_epochs = args.epochs if args.epochs != 100 else 2
-        print(f"[Smoke Test Mode] Setting epochs={smoke_epochs}, batch_size=2, max_samples=4...")
+        smoke_epochs = args.epochs if args.epochs != 50 else 2
+        print(f"[Smoke Test Mode] Setting epochs={smoke_epochs}, batch_size=4, max_train=8, max_val=4...")
         train_ird(
             data_dir=args.data_dir,
             output_dir=args.output_dir,
             epochs=smoke_epochs,
-            batch_size=2,
+            batch_size=4,
             lr=args.lr,
             weight_decay=args.weight_decay,
             img_size=args.img_size,
@@ -907,13 +1113,18 @@ if __name__ == "__main__":
             use_atd=args.use_atd,
             use_ssdp=args.use_ssdp,
             use_fgbr=args.use_fgbr,
+            use_quality=args.use_quality,
+            use_cdg=args.use_cdg,
+            use_aux_one2one=args.use_aux_one2one,
+            version=args.version,
+            loss_type=args.loss_type,
             device_str=args.device,
             workers=0,
             seed=args.seed,
             use_amp=args.amp,
             resume_path=args.resume,
-            max_train_samples=4,
-            max_val_samples=2,
+            max_train_samples=8,
+            max_val_samples=4,
         )
     else:
         train_ird(
@@ -936,9 +1147,18 @@ if __name__ == "__main__":
             use_atd=args.use_atd,
             use_ssdp=args.use_ssdp,
             use_fgbr=args.use_fgbr,
+            use_quality=args.use_quality,
+            use_cdg=args.use_cdg,
+            use_aux_one2one=args.use_aux_one2one,
+            version=args.version,
+            loss_type=args.loss_type,
             device_str=args.device,
             workers=args.workers,
             seed=args.seed,
             use_amp=args.amp,
             resume_path=args.resume,
         )
+
+
+if __name__ == "__main__":
+    main()

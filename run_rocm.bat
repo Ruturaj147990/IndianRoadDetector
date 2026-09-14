@@ -1,4 +1,5 @@
 @echo off
+set MIOPEN_FIND_MODE=2
 set ROCM_PYTHON=E:\ComfyUI_windows_portable\python_embeded\python.exe
 
 if exist "%ROCM_PYTHON%" (

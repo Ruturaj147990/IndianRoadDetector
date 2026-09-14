@@ -113,7 +113,7 @@ def class_aware_nms(
     boxes: torch.Tensor,
     scores: torch.Tensor,
     class_ids: torch.Tensor,
-    iou_threshold: float = 0.50,
+    iou_threshold: float = 0.40,
     max_det: int = 300,
     max_coordinate: float = 10000.0,
 ) -> torch.Tensor:
@@ -121,21 +121,28 @@ def class_aware_nms(
     if boxes.numel() == 0:
         return torch.empty((0,), dtype=torch.long, device=boxes.device)
 
-    offsets = class_ids.float().unsqueeze(1) * max_coordinate
-    offset_boxes = boxes + offsets
-    return pure_pytorch_nms(offset_boxes, scores, iou_threshold=iou_threshold, max_det=max_det)
+    try:
+        import torchvision.ops as tv_ops
+        keep = tv_ops.batched_nms(boxes, scores, class_ids, iou_threshold)
+        return keep[:max_det]
+    except Exception:
+        offsets = class_ids.float().unsqueeze(1) * max_coordinate
+        offset_boxes = boxes + offsets
+        return pure_pytorch_nms(offset_boxes, scores, iou_threshold=iou_threshold, max_det=max_det)
 
 
 def decode_ird_predictions_authoritative(
     head_output: Any,
     img_size: int = 640,
     conf_threshold: float = 0.25,
-    iou_threshold: float = 0.50,
+    iou_threshold: float = 0.40,
     max_det: int = 300,
     obj_gate: Optional[float] = None,
     decoder_version: str = "v2_smooth",
     device: torch.device = torch.device("cpu"),
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_diagnostics: bool = False,
+    score_mode: str = "sqrt_quality",
+) -> Union[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]]:
     """
     Authoritative decoding pipeline for IRD multi-scale predictions.
     
@@ -145,6 +152,7 @@ def decode_ird_predictions_authoritative(
     3. Strict boundary clamping to [0, img_size].
     4. Class-aware NMS with max_det enforcement.
     5. Post-NMS safety verification.
+    6. Comprehensive pre- and post-NMS diagnostics when return_diagnostics=True.
     """
     all_boxes_list: List[torch.Tensor] = []
     all_scores_list: List[torch.Tensor] = []
@@ -160,26 +168,35 @@ def decode_ird_predictions_authoritative(
     effective_gate = obj_gate if obj_gate is not None else conf_threshold
     gate_logit = math.log(effective_gate / max(1e-6, 1.0 - effective_gate)) if 0.0 < effective_gate < 1.0 else -10.0
 
+    total_grid_cells = 0
+    total_gated_cells = 0
+    stride_counts: Dict[int, Dict[str, int]] = {}
+
     for s_idx, stride in enumerate(strides):
         b_pred = box_preds[s_idx][0]  # [4, H, W]
         o_pred = obj_preds[s_idx][0]  # [1, H, W]
         c_pred = cls_preds[s_idx][0]  # [12, H, W]
 
         H, W = b_pred.shape[1], b_pred.shape[2]
+        cells_at_stride = H * W
+        total_grid_cells += cells_at_stride
 
         # 1. Early Objectness Gating in logit space
         o_logit_flat = o_pred[0].reshape(-1)  # [H*W]
         surviving_mask = o_logit_flat >= gate_logit
+        surv_count = int(surviving_mask.sum().item())
+        total_gated_cells += surv_count
+        stride_counts[stride] = {"total_cells": cells_at_stride, "surviving_gate": surv_count, "candidates": 0}
 
         if not surviving_mask.any():
             continue
 
         surviving_indices = surviving_mask.nonzero(as_tuple=False).squeeze(1)
 
-        device = b_pred.device
+        dev = b_pred.device
         # 2. Grid Coordinates for surviving locations only
-        grid_y = (surviving_indices // W).to(dtype=torch.float32, device=device)
-        grid_x = (surviving_indices % W).to(dtype=torch.float32, device=device)
+        grid_y = (surviving_indices // W).to(dtype=torch.float32, device=dev)
+        grid_x = (surviving_indices % W).to(dtype=torch.float32, device=dev)
 
         # Extract surviving raw boxes: [K, 4]
         b_flat = b_pred.permute(1, 2, 0).reshape(-1, 4)
@@ -206,18 +223,31 @@ def decode_ird_predictions_authoritative(
         c_flat = c_pred.permute(1, 2, 0).reshape(-1, NUM_CLASSES)
         cls_prob = torch.sigmoid(c_flat[surviving_indices])  # [K, 12]
 
-        if hasattr(head_output, "quality_preds") and head_output.quality_preds is not None and len(head_output.quality_preds) > s_idx:
+        has_quality = hasattr(head_output, "quality_preds") and head_output.quality_preds is not None and len(head_output.quality_preds) > s_idx
+
+        if score_mode == "obj_cls" or not has_quality:
+            comb_scores = obj_prob * cls_prob
+        elif score_mode == "task_aligned":
             q_pred = head_output.quality_preds[s_idx][0, 0].reshape(-1)
-            quality_prob = torch.sigmoid(q_pred[surviving_indices]).unsqueeze(1)  # [K, 1]
+            quality_prob = torch.sigmoid(q_pred[surviving_indices]).unsqueeze(1)
+            comb_scores = cls_prob * quality_prob
+        elif score_mode == "direct_cls":
+            comb_scores = cls_prob
+        elif score_mode == "linear_quality":
+            q_pred = head_output.quality_preds[s_idx][0, 0].reshape(-1)
+            quality_prob = torch.sigmoid(q_pred[surviving_indices]).unsqueeze(1)
+            comb_scores = cls_prob * obj_prob * quality_prob
+        else:  # default V1.5 "sqrt_quality"
+            q_pred = head_output.quality_preds[s_idx][0, 0].reshape(-1)
+            quality_prob = torch.sigmoid(q_pred[surviving_indices]).unsqueeze(1)
             # Formulate quality-aware calibrated confidence: Score = Cls * sqrt(Obj * Quality)
             comb_scores = cls_prob * torch.sqrt((obj_prob * quality_prob).clamp(min=1e-6))
-        else:
-            comb_scores = obj_prob * cls_prob  # [K, 12]
 
         max_scores, class_ids = comb_scores.max(dim=-1)
 
         # 6. Candidate Filter
         valid = (max_scores >= conf_threshold) & ((x2 - x1) > 1.0) & ((y2 - y1) > 1.0)
+        stride_counts[stride]["candidates"] = int(valid.sum().item())
 
         if valid.any():
             all_boxes_list.append(clamped_boxes[valid])
@@ -225,8 +255,23 @@ def decode_ird_predictions_authoritative(
             all_classes_list.append(class_ids[valid])
 
     if not all_boxes_list:
-        empty = torch.empty((0,), device=device)
-        return torch.empty((0, 4), device=device), empty, torch.empty((0,), dtype=torch.long, device=device)
+        empty_b = torch.empty((0, 4), device=device)
+        empty_s = torch.empty((0,), device=device)
+        empty_c = torch.empty((0,), dtype=torch.long, device=device)
+        if return_diagnostics:
+            diag = {
+                "raw_prediction_count": total_grid_cells,
+                "gated_prediction_count": total_gated_cells,
+                "conf_filtered_count": 0,
+                "count_removed_by_nms": 0,
+                "final_count": 0,
+                "boxes_suppressed_per_class": [0] * NUM_CLASSES,
+                "candidate_per_class": [0] * NUM_CLASSES,
+                "retained_per_class": [0] * NUM_CLASSES,
+                "stride_breakdown": stride_counts,
+            }
+            return empty_b, empty_s, empty_c, diag
+        return empty_b, empty_s, empty_c
 
     all_boxes = torch.cat(all_boxes_list, dim=0)
     all_scores = torch.cat(all_scores_list, dim=0)
@@ -242,15 +287,38 @@ def decode_ird_predictions_authoritative(
     )
 
     retained_boxes = all_boxes[keep]
+    retained_scores = all_scores[keep]
+    retained_classes = all_classes[keep]
     # 8. Post-NMS Safety Verification
     safety_mask = retained_scores >= conf_threshold
-    return retained_boxes[safety_mask], retained_scores[safety_mask], retained_classes[safety_mask]
+    final_boxes = retained_boxes[safety_mask]
+    final_scores = retained_scores[safety_mask]
+    final_classes = retained_classes[safety_mask]
+
+    if return_diagnostics:
+        cand_bincount = torch.bincount(all_classes, minlength=NUM_CLASSES).cpu()
+        ret_bincount = torch.bincount(final_classes, minlength=NUM_CLASSES).cpu()
+        supp_bincount = (cand_bincount - ret_bincount).tolist()
+        diag = {
+            "raw_prediction_count": total_grid_cells,
+            "gated_prediction_count": total_gated_cells,
+            "conf_filtered_count": len(all_boxes),
+            "count_removed_by_nms": len(all_boxes) - len(final_boxes),
+            "final_count": len(final_boxes),
+            "boxes_suppressed_per_class": supp_bincount,
+            "candidate_per_class": cand_bincount.tolist(),
+            "retained_per_class": ret_bincount.tolist(),
+            "stride_breakdown": stride_counts,
+        }
+        return final_boxes, final_scores, final_classes, diag
+
+    return final_boxes, final_scores, final_classes
 
 
 def decode_detections(
     head_output: Any,
     conf_threshold: float = 0.25,
-    nms_threshold: float = 0.50,
+    nms_threshold: float = 0.40,
     max_det: int = 300,
     img_size: Union[int, Tuple[int, int]] = 640,
     obj_gate: Optional[float] = None,

@@ -1,0 +1,42 @@
+{
+  "model_name": "IRD \u2014 IndianRoadDetection (V1)",
+  "checkpoint_path": "experiments/custom_model/final_training_50ep/ird_best.pt",
+  "dataset_path": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\data\\indian_road_yolo\\data.yaml",
+  "image_size": 640,
+  "number_of_images": 20,
+  "parameter_count": 4441989,
+  "precision": 0.0226,
+  "recall": 0.5672,
+  "mAP50": 0.2721,
+  "mAP50_95": 0.1661,
+  "per_class_ap50": {
+    "person": 0.4367,
+    "rider": 0.0376,
+    "car": 0.9023,
+    "truck": 0.0,
+    "bus": 0.0,
+    "motorcycle": 0.2406,
+    "bicycle": 0.0152,
+    "autorickshaw": 0.0,
+    "animal": 0.0,
+    "vehicle fallback": 0.0,
+    "traffic light": 0.0,
+    "traffic sign": 0.0
+  },
+  "per_class_ap50_95": {
+    "person": 0.2015,
+    "rider": 0.009,
+    "car": 0.6454,
+    "truck": 0.0,
+    "bus": 0.0,
+    "motorcycle": 0.1361,
+    "bicycle": 0.0048,
+    "autorickshaw": 0.0,
+    "animal": 0.0,
+    "vehicle fallback": 0.0,
+    "traffic light": 0.0,
+    "traffic sign": 0.0
+  },
+  "average_latency_ms": 175.94,
+  "fps": 5.68
+}
