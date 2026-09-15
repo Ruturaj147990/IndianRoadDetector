@@ -194,9 +194,18 @@ class TaskAlignedLoss(nn.Module):
             box_preds, cls_preds = predictions
 
         device = box_preds[0].device
-        dtype = box_preds[0].dtype
+        # Always compute loss strictly in float32 to prevent float16 underflow/overflow in CIoU and TAL
+        dtype = torch.float32
         B = box_preds[0].shape[0]
         h_img, w_img = img_size
+
+        # Cast predictions to float32
+        box_preds = [p.float() for p in box_preds]
+        cls_preds = [p.float() for p in cls_preds]
+        if obj_preds is not None:
+            obj_preds = [p.float() if p is not None else None for p in obj_preds]
+        if quality_preds is not None:
+            quality_preds = [p.float() if p is not None else None for p in quality_preds]
 
         grid_shapes = [(p.shape[2], p.shape[3]) for p in box_preds]
 

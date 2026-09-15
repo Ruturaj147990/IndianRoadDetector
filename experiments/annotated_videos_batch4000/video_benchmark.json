@@ -1,0 +1,20 @@
+{
+  "video_source": "experiments\\evaluation_results\\video_demo\\source_pedestrian_motorcycle_clip_00ca74e0.mp4",
+  "output_path": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\experiments\\annotated_videos_batch4000\\annotated_pedestrian_motorcycle_clip_00ca74e0.mp4",
+  "frames_processed": 60,
+  "resolution": "1920x994",
+  "input_fps": 15.0,
+  "model_only_latency_ms": 92.12,
+  "model_only_fps": 10.85,
+  "end_to_end_latency_ms": 112.63,
+  "end_to_end_fps": 8.88,
+  "timing_breakdown_ms": {
+    "preprocess_ms": 2.38,
+    "gpu_forward_ms": 67.53,
+    "decode_nms_ms": 24.59,
+    "render_encode_ms": 15.34,
+    "total_per_frame_ms": 112.63
+  },
+  "device": "AMD GPU / ROCm: AMD Radeon RX 7700 XT",
+  "total_elapsed_seconds": 6.76
+}

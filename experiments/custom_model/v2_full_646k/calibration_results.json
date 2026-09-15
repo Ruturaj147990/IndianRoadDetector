@@ -1,0 +1,54 @@
+{
+  "gpu": "AMD Radeon RX 7700 XT",
+  "best_batch_size": 4,
+  "benchmark": [
+    {
+      "batch_size": 4,
+      "img_per_sec": 24.7,
+      "batches_per_sec": 6.17,
+      "avg_iter_ms": 162.0,
+      "avg_fwd_ms": 53.9,
+      "avg_bwd_ms": 107.2,
+      "peak_vram_gb": 2.25,
+      "total_vram_gb": 11.98,
+      "headroom_gb": 9.74,
+      "is_safe": true
+    },
+    {
+      "batch_size": 8,
+      "img_per_sec": 24.3,
+      "batches_per_sec": 3.03,
+      "avg_iter_ms": 329.6,
+      "avg_fwd_ms": 112.7,
+      "avg_bwd_ms": 215.9,
+      "peak_vram_gb": 4.48,
+      "total_vram_gb": 11.98,
+      "headroom_gb": 7.5,
+      "is_safe": true
+    },
+    {
+      "batch_size": 12,
+      "img_per_sec": 23.7,
+      "batches_per_sec": 1.98,
+      "avg_iter_ms": 505.7,
+      "avg_fwd_ms": 167.2,
+      "avg_bwd_ms": 337.5,
+      "peak_vram_gb": 6.67,
+      "total_vram_gb": 11.98,
+      "headroom_gb": 5.32,
+      "is_safe": true
+    },
+    {
+      "batch_size": 16,
+      "img_per_sec": 24.7,
+      "batches_per_sec": 1.55,
+      "avg_iter_ms": 646.9,
+      "avg_fwd_ms": 207.9,
+      "avg_bwd_ms": 437.9,
+      "peak_vram_gb": 8.94,
+      "total_vram_gb": 11.98,
+      "headroom_gb": 3.04,
+      "is_safe": true
+    }
+  ]
+}

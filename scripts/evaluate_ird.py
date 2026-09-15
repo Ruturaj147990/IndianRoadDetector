@@ -417,6 +417,8 @@ def run_evaluation(
     # 2. Inspect Checkpoint & Auto-detect Architecture Configuration
     weights_loaded = False
     use_atd_detected = use_atd if use_atd is not None else False
+    use_ssdp_detected = False
+    use_fgbr_detected = False
     loaded_sd = None
     if weights_path and Path(weights_path).exists():
         ckpt_p = Path(weights_path)

@@ -1,0 +1,9 @@
+{
+  "smoke_batches": 100,
+  "samples_seen": 800,
+  "throughput_img_s": 3.6,
+  "avg_fetch_ms": 1636.1,
+  "avg_gpu_ms": 604.1,
+  "avg_total_ms": 2240.2,
+  "peak_vram_gb": 4.57
+}

@@ -1,0 +1,22 @@
+{
+  "final_epoch": 50,
+  "best_epoch": 19,
+  "best_val_loss": 5.812898245122698,
+  "best_map50": 2.819,
+  "best_map50_95": 1.7538,
+  "best_recall": 3.9533,
+  "best_precision": 0.7131,
+  "final_train_loss": 4.3094,
+  "final_val_loss": 6.9335,
+  "total_training_time_sec": 19552.47,
+  "average_epoch_time_sec": 391.05,
+  "average_img_per_sec": 21.18,
+  "peak_vram_gb": 6.74,
+  "checkpoints": {
+    "best": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\experiments\\custom_model\\final_training_50ep\\ird_best.pt",
+    "last": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\experiments\\custom_model\\final_training_50ep\\ird_last.pt"
+  },
+  "history_csv": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\experiments\\custom_model\\final_training_50ep\\ird_history.csv",
+  "history_json": "C:\\Users\\limbk\\OneDrive\\Desktop\\YOLO\\IndianRoadDetector\\experiments\\custom_model\\final_training_50ep\\ird_history.json",
+  "completed": true
+}

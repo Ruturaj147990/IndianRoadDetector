@@ -1,0 +1,14 @@
+{
+  "model_name": "IRD_V2",
+  "parameters": 4441989,
+  "epochs": 5,
+  "batch_size": 8,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "img_size": 640,
+  "device": "cuda",
+  "gpu_name": "AMD Radeon RX 7700 XT",
+  "max_cached_shards": 12,
+  "total_shards": 646,
+  "benchmark_val_clips_excluded": 25
+}

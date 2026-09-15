@@ -13,6 +13,7 @@ data/indian_road_yolo/images/
 data/indian_road_yolo/labels/
 data/benchmark_test/
 data/test_stream/
+data/cache_shards/
 
 # Videos
 *.mp4

@@ -257,7 +257,7 @@ class TaskAlignedAssignor(nn.Module):
             target_gt_idx[b, pos_anchor_mask] = assigned_gt_idx
 
             # 7. Target Bounding Boxes:
-            target_bboxes[b, pos_anchor_mask] = b_gt_boxes[assigned_gt_idx]
+            target_bboxes[b, pos_anchor_mask] = b_gt_boxes[assigned_gt_idx].to(dtype=dtype)
 
             # 8. Normalized Target Score:
             # For each GT, normalize alignment metric:
